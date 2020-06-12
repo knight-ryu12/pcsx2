@@ -4,8 +4,7 @@
 #define FMT_24 1
 #define FMT_16 2
 
-#ifndef VS_BPPZ
-#define VS_BPPZ 0
+#ifndef VS_TME
 #define VS_TME 1
 #define VS_FST 1
 #endif
@@ -49,6 +48,8 @@
 #define PS_BLEND_B 0
 #define PS_BLEND_C 0
 #define PS_BLEND_D 0
+#define PS_DITHER 0
+#define PS_ZCLAMP 0
 #endif
 
 #define SW_BLEND (PS_BLEND_A || PS_BLEND_B || PS_BLEND_D)
@@ -85,6 +86,9 @@ struct PS_OUTPUT
 {
 	float4 c0 : SV_Target0;
 	float4 c1 : SV_Target1;
+#if PS_ZCLAMP
+	float depth : SV_Depth;
+#endif
 };
 
 Texture2D<float4> Texture : register(t0);
@@ -99,6 +103,8 @@ cbuffer cb0
 	float4 VertexScale;
 	float4 VertexOffset;
 	float4 Texture_Scale_Offset;
+	uint MaxDepth;
+	uint3 pad_cb0;
 };
 
 cbuffer cb1
@@ -115,7 +121,9 @@ cbuffer cb1
 	uint4 FbMask;
 	float4 TC_OffsetHack;
 	float Af;
-	float3 _pad;
+	float MaxDepthPS;
+	float2 pad_cb1;
+	float4x4 DitherMatrix;
 };
 
 cbuffer cb2
@@ -665,6 +673,18 @@ void ps_fbmask(inout float4 C, float2 pos_xy)
 	}
 }
 
+void ps_dither(inout float3 C, float2 pos_xy)
+{
+#if PS_DITHER
+	#if PS_DITHER == 2
+	int2 fpos = int2(pos_xy);
+	#else
+	int2 fpos = int2(pos_xy / (float)PS_SCALE_FACTOR);
+	#endif
+	C += DitherMatrix[fpos.y&3][fpos.x&3];
+#endif
+}
+
 void ps_blend(inout float4 Color, float As, float2 pos_xy)
 {
 	if (SW_BLEND)
@@ -683,6 +703,9 @@ void ps_blend(inout float4 Color, float As, float2 pos_xy)
 		float3 D = (PS_BLEND_D == 0) ? Cs : ((PS_BLEND_D == 1) ? Cd : (float3)0.0f);
 
 		Cv = (PS_BLEND_A == PS_BLEND_B) ? D : trunc(((A - B) * C) + D);
+
+		// Dithering
+		ps_dither(Cv, pos_xy);
 
 		// Standard Clamp
 		if (PS_COLCLIP == 0 && PS_HDR == 0)
@@ -746,12 +769,23 @@ PS_OUTPUT ps_main(PS_INPUT input)
 		if (C.a < A_one) C.a += A_one;
 	}
 
+#if !SW_BLEND && PS_DITHER
+	ps_dither(C.rgb, input.p.xy);
+	// Dither matrix range is [-4,3] but positive values can cause issues when
+	// software blending is not used or is unavailable.
+	C.rgb -= 3.0;
+#endif
+	
 	ps_blend(C, alpha_blend, input.p.xy);
 
 	ps_fbmask(C, input.p.xy);
 
 	output.c0 = C / 255.0f;
 	output.c1 = (float4)(alpha_blend);
+
+#if PS_ZCLAMP
+	output.depth = min(input.p.z, MaxDepthPS);
+#endif
 
 	return output;
 }
@@ -762,14 +796,8 @@ PS_OUTPUT ps_main(PS_INPUT input)
 
 VS_OUTPUT vs_main(VS_INPUT input)
 {
-	if(VS_BPPZ == 1) // 24
-	{
-		input.z = input.z & 0xffffff;
-	}
-	else if(VS_BPPZ == 2) // 16
-	{
-		input.z = input.z & 0xffff;
-	}
+	// Clamp to max depth, gs doesn't wrap
+	input.z = min(input.z, MaxDepth);
 
 	VS_OUTPUT output;
 
