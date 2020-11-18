@@ -182,8 +182,9 @@ public:
 				uint32 prim:2;
 				uint32 point:1;
 				uint32 line:1;
+				uint32 cpu_sprite:1;
 
-				uint32 _free:27;
+				uint32 _free:26;
 			};
 
 			uint32 key;
@@ -308,29 +309,27 @@ public:
 		{
 			struct
 			{
-				uint32 abe:1;
-				uint32 a:2;
-				uint32 b:2;
-				uint32 c:2;
-				uint32 d:2;
+				// Color mask
 				uint32 wr:1;
 				uint32 wg:1;
 				uint32 wb:1;
 				uint32 wa:1;
+				// Alpha blending
+				uint32 blend_index:7;
+				uint32 abe:1;
 				uint32 accu_blend:1;
 			};
 
 			struct
 			{
-				uint32 _pad:1;
-				uint32 abcd:8;
+				// Color mask
 				uint32 wrgba:4;
 			};
 
 			uint32 key;
 		};
 
-		operator uint32() {return key & 0x3fff;}
+		operator uint32() {return key & 0x1fff;}
 
 		OMBlendSelector() : key(0) {}
 	};
@@ -383,9 +382,10 @@ private:
 	
 	uint16 ConvertBlendEnum(uint16 generic) final;
 
+	CComPtr<IDXGIFactory2> m_factory;
 	CComPtr<ID3D11Device> m_dev;
 	CComPtr<ID3D11DeviceContext> m_ctx;
-	CComPtr<IDXGISwapChain> m_swapchain;
+	CComPtr<IDXGISwapChain1> m_swapchain;
 	CComPtr<ID3D11Buffer> m_vb;
 	CComPtr<ID3D11Buffer> m_vb_old;
 	CComPtr<ID3D11Buffer> m_ib;
@@ -495,22 +495,12 @@ private:
 
 protected:
 	struct {D3D_FEATURE_LEVEL level; std::string model, vs, gs, ps, cs;} m_shader;
-
-	static HMODULE s_d3d_compiler_dll;
-	static decltype(&D3DCompile) s_pD3DCompile;
-	// Older version doesn't support D3D_COMPILE_STANDARD_FILE_INCLUDE, which
-	// could be useful for external shaders.
-	static bool s_old_d3d_compiler_dll;
-
 public:
 	GSDevice11();
 	virtual ~GSDevice11() {}
 
 	bool SetFeatureLevel(D3D_FEATURE_LEVEL level, bool compat_mode);
 	void GetFeatureLevel(D3D_FEATURE_LEVEL& level) const { level = m_shader.level; }
-
-	static bool LoadD3DCompiler();
-	static void FreeD3DCompiler();
 
 	bool Create(const std::shared_ptr<GSWnd> &wnd);
 	bool Reset(int w, int h);

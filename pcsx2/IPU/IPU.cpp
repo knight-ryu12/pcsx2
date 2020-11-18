@@ -283,6 +283,7 @@ void ipuSoftReset()
 	ipuRegs.cmd.DATA = 0; // required for Enthusia - Professional Racing after fix, or will freeze at start of next video.
 
 	memzero(g_BP);
+	hwIntcIrq(INTC_IPU); // required for FightBox
 }
 
 __fi bool ipuWrite32(u32 mem, u32 value)
@@ -408,7 +409,7 @@ static __ri void ipuBDEC(tIPU_CMD_BDEC bdec)
 
 static __fi bool ipuVDEC(u32 val)
 {
-	if (EmuConfig.Gamefixes.FMVinSoftwareHack || g_Conf->GSWindow.FMVAspectRatioSwitch != FMV_AspectRatio_Switch_Off) {
+	if (g_Conf->GSWindow.FMVAspectRatioSwitch != FMV_AspectRatio_Switch_Off) {
 		static int count = 0;
 		if (count++ > 5) {
 			if (!FMVstarted) {
@@ -460,6 +461,7 @@ static __fi bool ipuVDEC(u32 val)
 			// This is due to differences with IPU and the MPEG standard. See get_macroblock_address_increment().
 
 			ipuRegs.ctrl.ECD = (ipuRegs.cmd.DATA == 0);
+			[[fallthrough]];
 
 		case 1:
 			if (!getBits32((u8*)&ipuRegs.top, 0))
