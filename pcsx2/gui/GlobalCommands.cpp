@@ -33,14 +33,12 @@
 #include "DebugTools/Debug.h"
 #include "R3000A.h"
 #include "SPU2/spu2.h"
+#include "gui/Dialogs/ModalPopups.h"
 
-// renderswitch - tells GSdx to go into dx9 sw if "renderswitch" is set.
+// renderswitch - tells GS to go into dx9 sw if "renderswitch" is set.
 bool renderswitch = false;
-uint renderswitch_delay = 0;
 
-extern bool switchAR;
-
-static int g_Pcsx2Recording = 0; // true 1 if recording video and sound
+static bool g_Pcsx2Recording = false; // true if recording video and sound
 
 
 KeyAcceleratorCode::KeyAcceleratorCode(const wxKeyEvent& evt)
@@ -174,21 +172,11 @@ namespace Implementations
 		pauser.AllowResume();
 	}
 
-	void UpdateImagePosition()
-	{
-		//AppApplySettings() would have been nicer, since it also immidiately affects the GUI (if open).
-		//However, the events sequence it generates also "depresses" Shift/CTRL/etc, so consecutive zoom with CTRL down breaks.
-		//Since zoom only affects the window viewport anyway, we can live with directly calling it.
-		if (GSFrame* gsFrame = wxGetApp().GetGsFramePtr())
-			if (GSPanel* woot = gsFrame->GetViewport())
-				woot->DoResize();
-	}
-
 	void GSwindow_CycleAspectRatio()
 	{
 		AspectRatioType& art = g_Conf->GSWindow.AspectRatio;
 		const char* arts = "Not modified";
-		if (art == AspectRatio_Stretch && switchAR) //avoids a double 4:3 when coming from FMV aspect ratio switch
+		if (art == AspectRatio_Stretch && GSGetFMVSwitch()) //avoids a double 4:3 when coming from FMV aspect ratio switch
 			art = AspectRatio_4_3;
 		switch (art)
 		{
@@ -209,7 +197,9 @@ namespace Implementations
 		}
 
 		OSDlog(Color_StrongBlue, true, "(GSwindow) Aspect ratio: %s", arts);
-		UpdateImagePosition();
+
+		// Disable FMV mode if we were previously in it, so the user can override the AR.
+		GSSetFMVSwitch(false);
 	}
 
 	void SetOffset(float x, float y)
@@ -217,8 +207,6 @@ namespace Implementations
 		g_Conf->GSWindow.OffsetX = x;
 		g_Conf->GSWindow.OffsetY = y;
 		OSDlog(Color_StrongBlue, true, "(GSwindow) Offset: x=%f, y=%f", x, y);
-
-		UpdateImagePosition();
 	}
 
 	void GSwindow_OffsetYplus()
@@ -252,8 +240,6 @@ namespace Implementations
 			return;
 		g_Conf->GSWindow.StretchY = zoom;
 		OSDlog(Color_StrongBlue, true, "(GSwindow) Vertical stretch: %f", zoom);
-
-		UpdateImagePosition();
 	}
 
 	void GSwindow_ZoomInY()
@@ -279,8 +265,6 @@ namespace Implementations
 			OSDlog(Color_StrongBlue, true, "(GSwindow) Zoom: 0 (auto, no black bars)");
 		else
 			OSDlog(Color_StrongBlue, true, "(GSwindow) Zoom: %f", zoom);
-
-		UpdateImagePosition();
 	}
 
 
@@ -321,8 +305,6 @@ namespace Implementations
 			// the content stays on screen. Try to prevent that by first exiting fullscreen,
 			// but don't update the internal PCSX2 state/config, and PCSX2 will restore
 			// fullscreen correctly when emulation resumes according to its state/config.
-			// This is similar to what LilyPad's "Safe fullscreen exit on escape" hack does,
-			// and thus hopefully makes LilyPad's hack redundant.
 			gsframe->ShowFullScreen(false, false);
 		}
 
@@ -352,18 +334,25 @@ namespace Implementations
 			{
 				// aborting suspend request
 				// Note: if we didn't want to suspend emulation for this confirmation dialog,
-				// and if LilyPad has "Safe fullscreen exit on ESC", then pressing ESC would
-				// have exited fullscreen without PCSX2 knowing about it, and since it's not
-				// suspended it would not re-init the fullscreen state if the confirmation is
-				// aborted. On such case we'd have needed to set the gsframe fullscreen mode
-				// here according to g_Conf->GSWindow.IsFullscreen
+				// then pressing ESC would have exited fullscreen without PCSX2 knowing about it,
+				// and since it's not suspended it would not re-init the fullscreen state if the
+				// confirmation is aborted. On such case we'd have needed to set the gsframe
+				// fullscreen mode here according to g_Conf->GSWindow.IsFullscreen
 				CoreThread.Resume();
 				return;
 			}
 		}
 
 		if (g_Conf->GSWindow.CloseOnEsc)
+		{
 			sMainFrame.SetFocus();
+#ifndef DISABLE_RECORDING
+			// Disable recording controls that only make sense if the game is running
+			sMainFrame.enableRecordingMenuItem(MenuId_Recording_FrameAdvance, false);
+			sMainFrame.enableRecordingMenuItem(MenuId_Recording_TogglePause, false);
+			sMainFrame.enableRecordingMenuItem(MenuId_Recording_ToggleRecordingMode, false);
+#endif
+		}
 	}
 
 	void Sys_Resume()
@@ -384,17 +373,30 @@ namespace Implementations
 
 	void Sys_TakeSnapshot()
 	{
-		GSmakeSnapshot(g_Conf->Folders.Snapshots.ToUTF8());
+		if (GSmakeSnapshot(g_Conf->Folders.Snapshots.ToUTF8().data()))
+			OSDlog(ConsoleColors::Color_Black, true, "Snapshot taken");
 	}
 
 	void Sys_RenderToggle()
 	{
-		if (renderswitch_delay == 0)
+		if (GSDump::isRunning)
+			return;
+		static bool reentrant = false;
+		if (!reentrant)
 		{
-			ScopedCoreThreadPause paused_core(new SysExecEvent_SaveSinglePlugin(PluginId_GS));
+			reentrant = true;
+			ScopedCoreThreadPause paused_core;
+			freezeData fP = {0, nullptr};
+			MTGS_FreezeData sstate = {&fP, 0};
+			GetMTGS().Freeze(FreezeAction::Size, sstate);
+			fP.data = new char[fP.size];
+			GetMTGS().Freeze(FreezeAction::Save, sstate);
+			GetMTGS().Suspend(true);
 			renderswitch = !renderswitch;
+			GetMTGS().Freeze(FreezeAction::Load, sstate);
+			delete[] fP.data;
 			paused_core.AllowResume();
-			renderswitch_delay = -1;
+			reentrant = false;
 		}
 	}
 
@@ -444,52 +446,42 @@ namespace Implementations
 		ScopedCoreThreadPause paused_core;
 		paused_core.AllowResume();
 
-		g_Pcsx2Recording ^= 1;
+		if (wxGetApp().HasGUI())
+		{
+			sMainFrame.VideoCaptureToggle();
+			return;
+		}
 
 		GetMTGS().WaitGS(); // make sure GS is in sync with the audio stream when we start.
+		g_Pcsx2Recording = !g_Pcsx2Recording;
 		if (g_Pcsx2Recording)
 		{
 			// start recording
 
 			// make the recording setup dialog[s] pseudo-modal also for the main PCSX2 window
-			// (the GSdx dialog is already properly modal for the GS window)
-			bool needsMainFrameEnable = false;
+			// (the GS dialog is already properly modal for the GS window)
 			if (GetMainFramePtr() && GetMainFramePtr()->IsEnabled())
-			{
-				needsMainFrameEnable = true;
 				GetMainFramePtr()->Disable();
-			}
 
-			if (GSsetupRecording)
+			// GSsetupRecording can be aborted/canceled by the user. Don't go on to record the audio if that happens.
+			std::string filename;
+			if (GSsetupRecording(filename))
 			{
-				// GSsetupRecording can be aborted/canceled by the user. Don't go on to record the audio if that happens.
-				std::wstring* filename = nullptr;
-				if (filename = GSsetupRecording(g_Pcsx2Recording))
+				if (g_Conf->AudioCapture.EnableAudio && !SPU2setupRecording(&filename))
 				{
-					SPU2setupRecording(g_Pcsx2Recording, filename);
-					delete filename;
-				}
-				else
-				{
-					// recording dialog canceled by the user. align our state
-					g_Pcsx2Recording ^= 1;
+					GSendRecording();
+					g_Pcsx2Recording = false;
 				}
 			}
-			else
-			{
-				// the GS doesn't support recording
-				SPU2setupRecording(g_Pcsx2Recording, NULL);
-			}
-
-			if (GetMainFramePtr() && needsMainFrameEnable)
-				GetMainFramePtr()->Enable();
+			else // recording dialog canceled by the user. align our state
+				g_Pcsx2Recording = false;
 		}
 		else
 		{
 			// stop recording
-			if (GSsetupRecording)
-				GSsetupRecording(g_Pcsx2Recording);
-			SPU2setupRecording(g_Pcsx2Recording, NULL);
+			GSendRecording();
+			if (g_Conf->AudioCapture.EnableAudio)
+				SPU2endRecording();
 		}
 	}
 
@@ -528,6 +520,15 @@ namespace Implementations
 		if (g_Conf->EmuOptions.EnableRecordingTools)
 		{
 			g_InputRecordingControls.RecordModeToggle();
+		}
+	}
+
+	void GoToFirstFrame()
+	{
+		if (g_Conf->EmuOptions.EnableRecordingTools && g_InputRecording.IsActive())
+		{
+			// Assumes that gui is active, as you can't access recording options without it
+			g_InputRecording.GoToFirstFrame(GetMainFramePtr());
 		}
 	}
 
@@ -828,6 +829,8 @@ static const GlobalCommandDescriptor CommandDeclarations[] =
 		{"FrameAdvance", Implementations::FrameAdvance, NULL, NULL, false},
 		{"TogglePause", Implementations::TogglePause, NULL, NULL, false},
 		{"InputRecordingModeToggle", Implementations::InputRecordingModeToggle, NULL, NULL, false},
+		{"GoToFirstFrame", Implementations::GoToFirstFrame, NULL, NULL, false},
+
 		{"States_SaveSlot0", Implementations::States_SaveSlot0, NULL, NULL, false},
 		{"States_SaveSlot1", Implementations::States_SaveSlot1, NULL, NULL, false},
 		{"States_SaveSlot2", Implementations::States_SaveSlot2, NULL, NULL, false},
@@ -838,6 +841,7 @@ static const GlobalCommandDescriptor CommandDeclarations[] =
 		{"States_SaveSlot7", Implementations::States_SaveSlot7, NULL, NULL, false},
 		{"States_SaveSlot8", Implementations::States_SaveSlot8, NULL, NULL, false},
 		{"States_SaveSlot9", Implementations::States_SaveSlot9, NULL, NULL, false},
+
 		{"States_LoadSlot0", Implementations::States_LoadSlot0, NULL, NULL, false},
 		{"States_LoadSlot1", Implementations::States_LoadSlot1, NULL, NULL, false},
 		{"States_LoadSlot2", Implementations::States_LoadSlot2, NULL, NULL, false},
@@ -921,12 +925,12 @@ void AcceleratorDictionary::Map(const KeyAcceleratorCode& _acode, const char* se
 		if (!strcmp("Sys_TakeSnapshot", searchfor))
 		{
 			// Sys_TakeSnapshot is special in a bad way. On its own it creates a screenshot
-			// but GSdx also checks whether shift or ctrl are held down, and for each of
+			// but GS also checks whether shift or ctrl are held down, and for each of
 			// them it does a different thing (gs dumps). So we need to map a shortcut and
 			// also the same shortcut with shift and the same with ctrl to the same function.
 			// So make sure the shortcut doesn't include shift or ctrl, and then add two more
 			// which are derived from it.
-			// Also, looking at the GSdx code, it seems that it never cares about both shift
+			// Also, looking at the GS code, it seems that it never cares about both shift
 			// and ctrl held together, but PCSX2 traditionally mapped f8, shift-f8 and ctrl-shift-f8
 			// to Sys_TakeSnapshot, so let's not change it - we'll keep adding only shift and
 			// ctrl-shift to the base shortcut.
@@ -1006,15 +1010,26 @@ void Pcsx2App::InitDefaultGlobalAccelerators()
 	GlobalAccels->Map(AAC(WXK_F4), "Framelimiter_MasterToggle");
 	GlobalAccels->Map(AAC(WXK_F4).Shift(), "Frameskip_Toggle");
 
-	/*GlobalAccels->Map( AAC( WXK_ESCAPE ),		"Sys_Suspend");
-	GlobalAccels->Map( AAC( WXK_F8 ),			"Sys_TakeSnapshot");
-	GlobalAccels->Map( AAC( WXK_F8 ).Shift(),	"Sys_TakeSnapshot");
-	GlobalAccels->Map( AAC( WXK_F8 ).Shift().Cmd(),"Sys_TakeSnapshot");
-	GlobalAccels->Map( AAC( WXK_F9 ),			"Sys_RenderswitchToggle");
+	// At this early stage of startup, the application assumes installed mode, so portable mode custom keybindings may present issues.
+	// Relevant - https://github.com/PCSX2/pcsx2/blob/678829a5b2b8ca7a3e42d8edc9ab201bf00b0fe9/pcsx2/gui/AppInit.cpp#L479
+	// Compared to L990 of GlobalCommands.cpp which also does an init for the GlobalAccelerators.
+	// The idea was to have: Reading from the PCSX2_keys.ini in the ini folder based on PCSX2_keys.ini.default which get overridden. 
+	// We also need to make it easier to do custom hotkeys for both normal/portable PCSX2 in the GUI.
+	GlobalAccels->Map(AAC(WXK_TAB), "Framelimiter_TurboToggle");
+	GlobalAccels->Map(AAC(WXK_TAB).Shift(), "Framelimiter_SlomoToggle");
 
-	GlobalAccels->Map( AAC( WXK_F10 ),			"Sys_LoggingToggle");
-	GlobalAccels->Map( AAC( WXK_F11 ),			"Sys_FreezeGS");
-	GlobalAccels->Map( AAC( WXK_F12 ),			"Sys_RecordingToggle");
+	GlobalAccels->Map(AAC(WXK_F6), "GSwindow_CycleAspectRatio");
+	GlobalAccels->Map(AAC(WXK_RETURN).Alt(), "FullscreenToggle");
 
-	GlobalAccels->Map( AAC( WXK_RETURN ).Alt(),	"FullscreenToggle" );*/
+	GlobalAccels->Map(AAC(WXK_ESCAPE), "Sys_SuspendResume");
+
+	// Fixme: GS Dumps could need a seperate label and hotkey binding or less interlinked with normal screenshots/snapshots , which messes with overloading lots of different mappings, commented the other GlobalAccels for this reason. GS hardcodes keybindings.
+	GlobalAccels->Map(AAC(WXK_F8), "Sys_TakeSnapshot");
+	// GlobalAccels->Map(AAC(WXK_F8).Shift(), "Sys_TakeSnapshot");
+	// GlobalAccels->Map(AAC(WXK_F8).Shift().Cmd(), "Sys_TakeSnapshot");
+	GlobalAccels->Map(AAC(WXK_F9), "Sys_RenderswitchToggle");
+
+	// GlobalAccels->Map(AAC(WXK_F10),	"Sys_LoggingToggle");
+	// GlobalAccels->Map(AAC(WXK_F11),	"Sys_FreezeGS");
+	GlobalAccels->Map(AAC(WXK_F12), "Sys_RecordingToggle");
 }

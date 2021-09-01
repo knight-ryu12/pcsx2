@@ -14,13 +14,14 @@
  */
 
 #pragma once
-#include "../../linux/util.h"
+#include "USB/usb-hid/usb-hid.h"
+#include "USB/linux/util.h"
+#include "Utilities/Console.h"
 #include <linux/input.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <thread>
 #include <atomic>
-#include "../usb-hid.h"
 
 namespace usb_hid
 {
@@ -54,7 +55,7 @@ namespace usb_hid
 			static int Configure(int port, const char* dev_type, HIDType hid_type, void* data);
 
 		protected:
-			static void ReaderThread(void* ptr);
+			void ReaderThread();
 
 			int mHandle;
 

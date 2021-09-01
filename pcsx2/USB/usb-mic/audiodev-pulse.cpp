@@ -13,13 +13,11 @@
  *  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "../gtk.h"
+#include "USB/gtk.h"
 #include "audiodev-pulse.h"
 #ifdef DYNLINK_PULSE
-#include "../dynlink/pulse.h"
+#include "USB/dynlink/pulse.h"
 #endif
-
-GtkWidget* new_combobox(const char* label, GtkWidget* vbox); // src/linux/config-gtk.cpp
 
 namespace usb_mic
 {
@@ -743,9 +741,10 @@ namespace usb_mic
 			if (padev->mPaused /*|| dur > 5000*/ || (!padata && nbytes /* hole */))
 			{
 				ret = pa_stream_drop(p);
-				if (ret != PA_OK)
 				return;
 			}
+
+			std::lock_guard<std::mutex> lock(padev->mMutex);
 
 			padev->mInBuffer.write((uint8_t*)padata, nbytes);
 
@@ -765,7 +764,7 @@ namespace usb_mic
 
 			while (padev->mInBuffer.peek_read() > 0)
 			{
-				data.data_in = (const float*)padev->mInBuffer.front();
+				data.data_in = (float*)padev->mInBuffer.front();
 				data.input_frames = padev->mInBuffer.peek_read<float>() / padev->GetChannels();
 				data.data_out = pBegin;
 				data.output_frames = (pEnd - pBegin) / padev->GetChannels();
@@ -781,7 +780,6 @@ namespace usb_mic
 					break; //TODO happens?
 				padev->mInBuffer.read<float>(samples);
 			}
-			std::lock_guard<std::mutex> lock(padev->mMutex);
 
 			size_t output_samples = output_frames_gen * padev->GetChannels();
 			float* pSrc = rebuf.data();

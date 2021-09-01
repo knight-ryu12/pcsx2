@@ -224,7 +224,6 @@ public:
 #include <list>
 #include <algorithm>
 #include <memory>
-#include "MakeUnique.h" // make_unique for C++11
 #include <atomic>
 #include <thread>
 
@@ -263,7 +262,7 @@ static const s64 _4gb = _1gb * 4;
 #define pxE_dev(english) pxExpandMsg((english))
 
 
-extern const wxChar *__fastcall pxExpandMsg(const wxChar *englishContent);
+extern const wxChar *__fastcall pxExpandMsg(const wxChar *message);
 extern const wxChar *__fastcall pxGetTranslation(const wxChar *message);
 extern bool pxIsEnglish(int id);
 

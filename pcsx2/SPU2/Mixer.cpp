@@ -1,5 +1,5 @@
 /*  PCSX2 - PS2 Emulator for PCs
- *  Copyright (C) 2002-2020  PCSX2 Dev Team
+ *  Copyright (C) 2002-2021  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -16,12 +16,9 @@
 #include "PrecompiledHeader.h"
 #include "Global.h"
 
-// Games have turned out to be surprisingly sensitive to whether a parked, silent voice is being fully emulated.
-// With Silent Hill: Shattered Memories requiring full processing for no obvious reason, we've decided to
-// disable the optimisation until we can tie it to the game database.
-#define NEVER_SKIP_VOICES 1
-
 void ADMAOutLogWrite(void* lpData, u32 ulSize);
+
+#include "interpolate_table.h"
 
 static const s32 tbl_XA_Factor[16][2] =
 	{
@@ -154,6 +151,22 @@ static __forceinline s32 GetNextDataBuffered(V_Core& thiscore, uint voiceidx)
 
 	if ((vc.SCurrent & 3) == 0)
 	{
+		if (vc.PendingLoopStart)
+		{
+			if ((Cycles - vc.PlayCycle) >= 4)
+			{
+				if (vc.LoopCycle < vc.PlayCycle)
+				{
+					vc.LoopStartA = vc.PendingLoopStartA;
+					ConLog("Core %d Voice %d Loop Written by HW within 4T of Key On, Now Applying\n", thiscore.Index, voiceidx);
+					vc.LoopMode = 1;
+				}
+				else
+					ConLog("Loop point from waveform set within 4T's, ignoring HW write\n");
+
+				vc.PendingLoopStart = false;
+			}
+		}
 		IncrementNextA(thiscore, voiceidx);
 
 		if ((vc.NextA & 7) == 0) // vc.SCurrent == 24 equivalent
@@ -192,13 +205,16 @@ static __forceinline s32 GetNextDataBuffered(V_Core& thiscore, uint voiceidx)
 		vc.LoopFlags = *memptr >> 8; // grab loop flags from the upper byte.
 
 		if ((vc.LoopFlags & XAFLAG_LOOP_START) && !vc.LoopMode)
+		{
 			vc.LoopStartA = vc.NextA & 0xFFFF8;
+			vc.LoopCycle = Cycles;
+		}
 
 		const int cacheIdx = vc.NextA / pcm_WordsPerBlock;
 		PcmCacheEntry& cacheLine = pcm_cache_data[cacheIdx];
 		vc.SBuffer = cacheLine.Sampledata;
 
-		if (cacheLine.Validated)
+		if (cacheLine.Validated && vc.Prev1 == cacheLine.Prev1 && vc.Prev2 == cacheLine.Prev2)
 		{
 			// Cached block!  Read from the cache directly.
 			// Make sure to propagate the prev1/prev2 ADPCM:
@@ -215,7 +231,11 @@ static __forceinline s32 GetNextDataBuffered(V_Core& thiscore, uint voiceidx)
 		{
 			// Only flag the cache if it's a non-dynamic memory range.
 			if (vc.NextA >= SPU2_DYN_MEMLINE)
+			{
 				cacheLine.Validated = true;
+				cacheLine.Prev1 = vc.Prev1;
+				cacheLine.Prev2 = vc.Prev2;
+			}
 
 			if (IsDevBuild)
 			{
@@ -267,18 +287,6 @@ static __forceinline void GetNextDataDummy(V_Core& thiscore, uint voiceidx)
 	vc.SCurrent += 4 - (vc.SCurrent & 3);
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////
-
-static s32 __forceinline GetNoiseValues()
-{
-	static u16 lfsr = 0xC0FEu;
-
-	u16 bit = lfsr ^ (lfsr << 3) ^ (lfsr << 4) ^ (lfsr << 5);
-	lfsr = (lfsr << 1) | (bit >> 15);
-
-	return (s16)lfsr;
-}
 /////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////
 //                                                                                     //
@@ -347,9 +355,22 @@ static __forceinline void CalculateADSR(V_Core& thiscore, uint voiceidx)
 	pxAssume(vc.ADSR.Value >= 0); // ADSR should never be negative...
 }
 
+
+__forceinline static s32 GaussianInterpolate(s32 pv4, s32 pv3, s32 pv2, s32 pv1, s32 i)
+{
+	s32 out = 0;
+	out =  (interpTable[0x0FF - i] * pv4) >> 15;
+	out += (interpTable[0x1FF - i] * pv3) >> 15;
+	out += (interpTable[0x100 + i] * pv2) >> 15;
+	out += (interpTable[0x000 + i] * pv1) >> 15;
+
+	return out;
+}
+
 /*
    Tension: 65535 is high, 32768 is normal, 0 is low
 */
+
 template <s32 i_tension>
 __forceinline static s32 HermiteInterpolate(
 	s32 y0, // 16.0
@@ -369,9 +390,9 @@ __forceinline static s32 HermiteInterpolate(
 
 	s32 val = ((2 * y1 + m0 + m1 - 2 * y2) * mu) >> 12;       // 16.0
 	val = ((val - 3 * y1 - 2 * m0 - m1 + 3 * y2) * mu) >> 12; // 16.0
-	val = ((val + m0) * mu) >> 11;                            // 16.0
+	val = ((val + m0) * mu) >> 12;                            // 16.0
 
-	return (val + (y1 << 1));
+	return (val + (y1));
 }
 
 __forceinline static s32 CatmullRomInterpolate(
@@ -396,7 +417,7 @@ __forceinline static s32 CatmullRomInterpolate(
 	val = ((a2 + val) * mu) >> 12;
 	val = ((a1 + val) * mu) >> 12;
 
-	return (a0 + val);
+	return (a0 + val) >> 1;
 }
 
 __forceinline static s32 CubicInterpolate(
@@ -413,9 +434,9 @@ __forceinline static s32 CubicInterpolate(
 
 	s32 val = ((a0)*mu) >> 12;
 	val = ((val + a1) * mu) >> 12;
-	val = ((val + a2) * mu) >> 11;
+	val = ((val + a2) * mu) >> 12;
 
-	return (val + (y1 << 1));
+	return (val + y1);
 }
 
 // Returns a 16 bit result in Value.
@@ -426,7 +447,7 @@ static __forceinline s32 GetVoiceValues(V_Core& thiscore, uint voiceidx)
 {
 	V_Voice& vc(thiscore.Voices[voiceidx]);
 
-	while (vc.SP > 0)
+	while (vc.SP >= 0)
 	{
 		if (InterpType >= 2)
 		{
@@ -443,9 +464,9 @@ static __forceinline s32 GetVoiceValues(V_Core& thiscore, uint voiceidx)
 	switch (InterpType)
 	{
 		case 0:
-			return vc.PV1 << 1;
+			return vc.PV1;
 		case 1:
-			return (vc.PV1 << 1) - (((vc.PV2 - vc.PV1) * vc.SP) >> 11);
+			return (vc.PV1) - (((vc.PV2 - vc.PV1) * mu) >> 12);
 
 		case 2:
 			return CubicInterpolate(vc.PV4, vc.PV3, vc.PV2, vc.PV1, mu);
@@ -453,6 +474,8 @@ static __forceinline s32 GetVoiceValues(V_Core& thiscore, uint voiceidx)
 			return HermiteInterpolate<16384>(vc.PV4, vc.PV3, vc.PV2, vc.PV1, mu);
 		case 4:
 			return CatmullRomInterpolate(vc.PV4, vc.PV3, vc.PV2, vc.PV1, mu);
+		case 5:
+			return GaussianInterpolate(vc.PV4, vc.PV3, vc.PV2, vc.PV1, (mu & 0x0ff0) >> 4);
 
 			jNO_DEFAULT;
 	}
@@ -460,26 +483,48 @@ static __forceinline s32 GetVoiceValues(V_Core& thiscore, uint voiceidx)
 	return 0; // technically unreachable!
 }
 
-// Noise values need to be mixed without going through interpolation, since it
-// can wreak havoc on the noise (causing muffling or popping).  Not that this noise
-// generator is accurate in its own right.. but eh, ah well :)
-static __forceinline s32 GetNoiseValues(V_Core& thiscore, uint voiceidx)
+// This is Dr. Hell's noise algorithm as implemented in pcsxr
+// Supposedly this is 100% accurate
+static __forceinline void UpdateNoise(V_Core& thiscore)
 {
-	// V_Voice &vc(thiscore.Voices[voiceidx]);
+	static const uint8_t noise_add[64] = {
+		1, 0, 0, 1, 0, 1, 1, 0,
+		1, 0, 0, 1, 0, 1, 1, 0,
+		1, 0, 0, 1, 0, 1, 1, 0,
+		1, 0, 0, 1, 0, 1, 1, 0,
+		0, 1, 1, 0, 1, 0, 0, 1,
+		0, 1, 1, 0, 1, 0, 0, 1,
+		0, 1, 1, 0, 1, 0, 0, 1,
+		0, 1, 1, 0, 1, 0, 0, 1};
 
-	s32 retval = GetNoiseValues();
+	static const uint16_t noise_freq_add[5] = {
+		0, 84, 140, 180, 210};
 
-	/*while(vc.SP>=4096)
+
+	u32 level = 0x8000 >> (thiscore.NoiseClk >> 2);
+	level <<= 16;
+
+	thiscore.NoiseCnt += 0x10000;
+
+	thiscore.NoiseCnt += noise_freq_add[thiscore.NoiseClk & 3];
+	if ((thiscore.NoiseCnt & 0xffff) >= noise_freq_add[4])
 	{
-		retval = GetNoiseValues();
-		vc.SP-=4096;
-	}*/
+		thiscore.NoiseCnt += 0x10000;
+		thiscore.NoiseCnt -= noise_freq_add[thiscore.NoiseClk & 3];
+	}
 
-	// GetNoiseValues can't set the phase zero on us unexpectedly
-	// like GetVoiceValues can.  Better assert just in case though..
-	// pxAssume(vc.ADSR.Phase != 0);
+	if (thiscore.NoiseCnt >= level)
+	{
+		while (thiscore.NoiseCnt >= level)
+			thiscore.NoiseCnt -= level;
 
-	return retval;
+		thiscore.NoiseOut = (thiscore.NoiseOut << 1) | noise_add[(thiscore.NoiseOut >> 10) & 63];
+	}
+}
+
+static __forceinline s32 GetNoiseValues(V_Core& thiscore)
+{
+	return (s16)thiscore.NoiseOut;
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////
@@ -527,14 +572,15 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx)
 	// have to run through all the motions of updating the voice regardless of it's
 	// audible status.  Otherwise IRQs might not trigger and emulation might fail.
 
+	UpdatePitch(coreidx, voiceidx);
+
+	StereoOut32 voiceOut(0, 0);
+	s32 Value = 0;
+
 	if (vc.ADSR.Phase > 0)
 	{
-		UpdatePitch(coreidx, voiceidx);
-
-		s32 Value = 0;
-
 		if (vc.Noise)
-			Value = GetNoiseValues(thiscore, voiceidx);
+			Value = GetNoiseValues(thiscore);
 		else
 		{
 			// Optimization : Forceinline'd Templated Dispatch Table.  Any halfwit compiler will
@@ -557,6 +603,9 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx)
 				case 4:
 					Value = GetVoiceValues<4>(thiscore, voiceidx);
 					break;
+				case 5:
+					Value = GetVoiceValues<5>(thiscore, voiceidx);
+					break;
 
 					jNO_DEFAULT;
 			}
@@ -570,53 +619,27 @@ static __forceinline StereoOut32 MixVoice(uint coreidx, uint voiceidx)
 		// use a full 64-bit multiply/result here.
 
 		CalculateADSR(thiscore, voiceidx);
-		Value = MulShr32(Value, vc.ADSR.Value);
-
-		// Store Value for eventual modulation later
-		// Pseudonym's Crest calculation idea. Actually calculates a crest, unlike the old code which was just peak.
-		if (vc.PV1 < vc.NextCrest)
-		{
-			vc.OutX = MulShr32(vc.NextCrest, vc.ADSR.Value);
-			vc.NextCrest = -0x8000;
-		}
-		if (vc.PV1 > vc.PV2)
-		{
-			vc.NextCrest = vc.PV1;
-		}
+		Value = ApplyVolume(Value, vc.ADSR.Value);
+		vc.OutX = Value;
 
 		if (IsDevBuild)
 			DebugCores[coreidx].Voices[voiceidx].displayPeak = std::max(DebugCores[coreidx].Voices[voiceidx].displayPeak, (s32)vc.OutX);
 
-		// Write-back of raw voice data (post ADSR applied)
-
-		if (voiceidx == 1)
-			spu2M_WriteFast(((0 == coreidx) ? 0x400 : 0xc00) + OutPos, vc.OutX);
-		else if (voiceidx == 3)
-			spu2M_WriteFast(((0 == coreidx) ? 0x600 : 0xe00) + OutPos, vc.OutX);
-
-		return ApplyVolume(StereoOut32(Value, Value), vc.Volume);
+		voiceOut = ApplyVolume(StereoOut32(Value, Value), vc.Volume);
 	}
 	else
 	{
-		// Continue processing voice, even if it's "off". Or else we miss interrupts! (Fatal Frame engine died because of this.)
-		if (NEVER_SKIP_VOICES || (*GetMemPtr(vc.NextA & 0xFFFF8) >> 8 & 3) != 3 || vc.LoopStartA != (vc.NextA & ~7)    // not in a tight loop
-			|| (Cores[0].IRQEnable && (Cores[0].IRQA & ~7) == vc.LoopStartA)                                           // or should be interrupting regularly
-			|| (Cores[1].IRQEnable && (Cores[1].IRQA & ~7) == vc.LoopStartA) || !(thiscore.Regs.ENDX & 1 << voiceidx)) // or isn't currently flagged as having passed the endpoint
-		{
-			UpdatePitch(coreidx, voiceidx);
-
-			while (vc.SP > 0)
-				GetNextDataDummy(thiscore, voiceidx); // Dummy is enough
-		}
-
-		// Write-back of raw voice data (some zeros since the voice is "dead")
-		if (voiceidx == 1)
-			spu2M_WriteFast(((0 == coreidx) ? 0x400 : 0xc00) + OutPos, 0);
-		else if (voiceidx == 3)
-			spu2M_WriteFast(((0 == coreidx) ? 0x600 : 0xe00) + OutPos, 0);
-
-		return StereoOut32(0, 0);
+		while (vc.SP > 0)
+			GetNextDataDummy(thiscore, voiceidx); // Dummy is enough
 	}
+
+	// Write-back of raw voice data (post ADSR applied)
+	if (voiceidx == 1)
+		spu2M_WriteFast(((0 == coreidx) ? 0x400 : 0xc00) + OutPos, Value);
+	else if (voiceidx == 3)
+		spu2M_WriteFast(((0 == coreidx) ? 0x600 : 0xe00) + OutPos, Value);
+
+	return voiceOut;
 }
 
 const VoiceMixSet VoiceMixSet::Empty((StereoOut32()), (StereoOut32())); // Don't use SteroOut32::Empty because C++ doesn't make any dep/order checks on global initializers.
@@ -641,6 +664,8 @@ static __forceinline void MixCoreVoices(VoiceMixSet& dest, const uint coreidx)
 StereoOut32 V_Core::Mix(const VoiceMixSet& inVoices, const StereoOut32& Input, const StereoOut32& Ext)
 {
 	MasterVol.Update();
+	UpdateNoise(*this);
+
 
 	// Saturate final result to standard 16 bit range.
 	const VoiceMixSet Voices(clamp_mix(inVoices.Dry), clamp_mix(inVoices.Wet));
@@ -669,11 +694,6 @@ StereoOut32 V_Core::Mix(const VoiceMixSet& inVoices, const StereoOut32& Input, c
 	// Mix in the External (nothing/core0) data
 	TD.Left += Ext.Left & DryGate.ExtL;
 	TD.Right += Ext.Right & DryGate.ExtR;
-
-	// User-level Effects disabling.  Nice speedup but breaks games that depend on
-	// reverb IRQs (very few -- if you find one name it here!).
-	if (EffectsDisabled)
-		return TD;
 
 	// ----------------------------------------------------------------------------
 	//    Reverberation Effects Processing
@@ -722,84 +742,6 @@ StereoOut32 V_Core::Mix(const VoiceMixSet& inVoices, const StereoOut32& Input, c
 	// Mix Dry + Wet
 	// (master volume is applied later to the result of both outputs added together).
 	return TD + ApplyVolume(RV, FxVol);
-}
-
-// Filters that work on the final output to de-alias and equlize it.
-// Taken from http://nenolod.net/projects/upse/
-#define OVERALL_SCALE (0.87f)
-
-StereoOut32 Apply_Frequency_Response_Filter(StereoOut32& SoundStream)
-{
-	static FrequencyResponseFilter FRF = FrequencyResponseFilter();
-
-	s32 in, out;
-	s32 l, r;
-	s32 mid, side;
-
-	l = SoundStream.Left;
-	r = SoundStream.Right;
-
-	mid = l + r;
-	side = l - r;
-
-	in = mid;
-	out = FRF.la0 * in + FRF.la1 * FRF.lx1 + FRF.la2 * FRF.lx2 - FRF.lb1 * FRF.ly1 - FRF.lb2 * FRF.ly2;
-
-	FRF.lx2 = FRF.lx1;
-	FRF.lx1 = in;
-
-	FRF.ly2 = FRF.ly1;
-	FRF.ly1 = out;
-
-	mid = out;
-
-	l = ((0.5) * (OVERALL_SCALE)) * (mid + side);
-	r = ((0.5) * (OVERALL_SCALE)) * (mid - side);
-
-	in = l;
-	out = FRF.ha0 * in + FRF.ha1 * FRF.History_One_In.Left + FRF.ha2 * FRF.History_Two_In.Left - FRF.hb1 * FRF.History_One_Out.Left - FRF.hb2 * FRF.History_Two_Out.Left;
-	FRF.History_Two_In.Left = FRF.History_One_In.Left;
-	FRF.History_One_In.Left = in;
-	FRF.History_Two_Out.Left = FRF.History_One_Out.Left;
-	FRF.History_One_Out.Left = out;
-	l = out;
-
-	in = r;
-	out = FRF.ha0 * in + FRF.ha1 * FRF.History_One_In.Right + FRF.ha2 * FRF.History_Two_In.Right - FRF.hb1 * FRF.History_One_Out.Right - FRF.hb2 * FRF.History_Two_Out.Right;
-	FRF.History_Two_In.Right = FRF.History_One_In.Right;
-	FRF.History_One_In.Right = in;
-	FRF.History_Two_Out.Right = FRF.History_One_Out.Right;
-	FRF.History_One_Out.Right = out;
-	r = out;
-
-	//clamp_mix(l);
-	//clamp_mix(r);
-
-	SoundStream.Left = l;
-	SoundStream.Right = r;
-
-	return SoundStream;
-}
-
-StereoOut32 Apply_Dealias_Filter(StereoOut32& SoundStream)
-{
-	static StereoOut32 Old = StereoOut32::Empty;
-
-	s32 l, r;
-
-	l = SoundStream.Left;
-	r = SoundStream.Right;
-
-	l += (l - Old.Left);
-	r += (r - Old.Right);
-
-	Old.Left = SoundStream.Left;
-	Old.Right = SoundStream.Right;
-
-	SoundStream.Left = l;
-	SoundStream.Right = r;
-
-	return SoundStream;
 }
 
 // used to throttle the output rate of cache stat reports
@@ -861,20 +803,8 @@ __forceinline
 	}
 	else
 	{
-		Out.Left = MulShr32(Out.Left << (SndOutVolumeShift + 1), Cores[1].MasterVol.Left.Value);
-		Out.Right = MulShr32(Out.Right << (SndOutVolumeShift + 1), Cores[1].MasterVol.Right.Value);
-
-#ifdef DEBUG_KEYS
-		if (postprocess_filter_enabled)
-#endif
-		{
-			if (postprocess_filter_dealias)
-			{
-				// Dealias filter emphasizes the highs too much.
-				Out = Apply_Dealias_Filter(Out);
-			}
-			Out = Apply_Frequency_Response_Filter(Out);
-		}
+		Out.Left = MulShr32(Out.Left << SndOutVolumeShift, Cores[1].MasterVol.Left.Value);
+		Out.Right = MulShr32(Out.Right << SndOutVolumeShift, Cores[1].MasterVol.Right.Value);
 
 		// Final Clamp!
 		// Like any good audio system, the PS2 pumps the volume and incurs some distortion in its
@@ -892,6 +822,9 @@ __forceinline
 	Out.Right *= FinalVolume;
 
 	SndBuffer::Write(Out);
+
+	if (SampleRate == 96000) // Double up samples for 96khz (Port Audio Non-Exclusive)
+		SndBuffer::Write(Out);
 
 	// Update AutoDMA output positioning
 	OutPos++;

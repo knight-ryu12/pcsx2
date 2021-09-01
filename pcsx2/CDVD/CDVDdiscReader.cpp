@@ -184,18 +184,20 @@ void StopKeepAliveThread()
 s32 CALLBACK DISCopen(const char* pTitle)
 {
 #if defined(_WIN32)
-	std::wstring drive = g_Conf->Folders.RunDisc.GetPath().ToStdWstring();
+	std::wstring drive = g_Conf->Folders.RunDisc.ToStdWstring();
 #else
-	std::string drive = g_Conf->Folders.RunDisc.GetPath().ToStdString();
+	std::string drive = g_Conf->Folders.RunDisc.ToStdString();
 #endif
 	GetValidDrive(drive);
+	if (drive.empty())
+		return -1;
 
 	// open device file
 	try
 	{
 		src = std::unique_ptr<IOCtlSrc>(new IOCtlSrc(drive));
 	}
-	catch (std::runtime_error& ex)
+	catch (std::runtime_error&)
 	{
 		return -1;
 	}

@@ -15,11 +15,11 @@
 
 #pragma once
 
+#ifndef DISABLE_RECORDING
+
 #include <wx/wx.h>
 #include <wx/filepicker.h>
 
-
-#ifndef DISABLE_RECORDING
 enum MenuIds_New_Recording_Frame
 {
 	MenuIds_New_Recording_Frame_File = 0,
@@ -32,19 +32,30 @@ class NewRecordingFrame : public wxDialog
 {
 public:
 	NewRecordingFrame(wxWindow* parent);
+	int ShowModal(const bool isCoreThreadOpen);
 
 	wxString GetFile() const;
 	wxString GetAuthor() const;
 	int GetFrom() const;
 
+protected:
+	void OnFileDirChange(wxFileDirPickerEvent& event);
+	void OnFileChanged(wxFileDirPickerEvent& event);
+	void OnRecordingTypeChoiceChanged(wxCommandEvent& event);
+	void EnableOkBox();
+
 private:
+	wxPanel* m_panel;
 	wxStaticText* m_fileLabel;
 	wxFilePickerCtrl* m_filePicker;
+	bool m_fileBrowsed;
 	wxStaticText* m_authorLabel;
 	wxTextCtrl* m_authorInput;
 	wxStaticText* m_fromLabel;
 	wxChoice* m_fromChoice;
 	wxButton* m_startRecording;
 	wxButton* m_cancelRecording;
+	wxString m_savestate_label;
+	wxStaticText* m_warning_label;
 };
 #endif

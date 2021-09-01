@@ -1,5 +1,5 @@
 /*  PCSX2 - PS2 Emulator for PCs
- *  Copyright (C) 2002-2010  PCSX2 Dev Team
+ *  Copyright (C) 2002-2021  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -28,7 +28,6 @@
 
 #ifndef DISABLE_RECORDING
 #include "Recording/InputRecording.h"
-#include "Recording/VirtualPad/VirtualPad.h"
 #endif
 
 #include <wx/cmdline.h>
@@ -47,22 +46,17 @@ void Pcsx2App::DetectCpuAndUserMode()
 	x86caps.CountCores();
 	x86caps.SIMD_EstablishMXCSRmask();
 
-	if (!x86caps.hasStreamingSIMD2Extensions)
+	if (!x86caps.hasStreamingSIMD4Extensions)
 	{
-		// This code will probably never run if the binary was correctly compiled for SSE2
-		// SSE2 is required for any decent speed and is supported by more than decade old x86 CPUs
+		// This code will probably never run if the binary was correctly compiled for SSE4
+		// SSE4 is required for any decent speed and is supported by more than decade old x86 CPUs
 		throw Exception::HardwareDeficiency()
-			.SetDiagMsg(L"Critical Failure: SSE2 Extensions not available.")
-			.SetUserMsg(_("SSE2 extensions are not available.  PCSX2 requires a cpu that supports the SSE2 instruction set."));
+			.SetDiagMsg(L"Critical Failure: SSE4.1 Extensions not available.")
+			.SetUserMsg(_("SSE4 extensions are not available.  PCSX2 requires a cpu that supports the SSE4.1 instruction set."));
 	}
 #endif
 
 	EstablishAppUserMode();
-
-	// force unload plugins loaded by the wizard.  If we don't do this the recompilers might
-	// fail to allocate the memory they need to function.
-	ShutdownPlugins();
-	UnloadPlugins();
 }
 
 void Pcsx2App::OpenMainFrame()
@@ -80,16 +74,10 @@ void Pcsx2App::OpenMainFrame()
 	m_id_Disassembler = disassembly->GetId();
 
 #ifndef DISABLE_RECORDING
-	VirtualPad* virtualPad0 = new VirtualPad(mainFrame, 0, g_Conf->inputRecording);
-	g_InputRecording.setVirtualPadPtr(virtualPad0, 0);
-	m_id_VirtualPad[0] = virtualPad0->GetId();
-
-	VirtualPad* virtualPad1 = new VirtualPad(mainFrame, 1, g_Conf->inputRecording);
-	g_InputRecording.setVirtualPadPtr(virtualPad1, 1);
-	m_id_VirtualPad[1] = virtualPad1->GetId();
-
 	NewRecordingFrame* newRecordingFrame = new NewRecordingFrame(mainFrame);
 	m_id_NewRecordingFrame = newRecordingFrame->GetId();
+	if (g_Conf->EmuOptions.EnableRecordingTools)
+		g_InputRecording.InitVirtualPadWindows(mainFrame);
 #endif
 
 	if (g_Conf->EmuOptions.Debugger.ShowDebuggerOnStart)
@@ -189,14 +177,12 @@ void Pcsx2App::AllocateCoreStuffs()
 			if (BaseException* ex = m_CpuProviders->GetException_MicroVU0())
 			{
 				scrollableTextArea->AppendText(L"* microVU0\n\t" + ex->FormatDisplayMessage() + L"\n\n");
-				recOps.UseMicroVU0 = false;
 				recOps.EnableVU0 = false;
 			}
 
 			if (BaseException* ex = m_CpuProviders->GetException_MicroVU1())
 			{
 				scrollableTextArea->AppendText(L"* microVU1\n\t" + ex->FormatDisplayMessage() + L"\n\n");
-				recOps.UseMicroVU1 = false;
 				recOps.EnableVU1 = false;
 			}
 
@@ -205,8 +191,6 @@ void Pcsx2App::AllocateCoreStuffs()
 			pxIssueConfirmation(exconf, MsgButtons().OK());
 		}
 	}
-
-	LoadPluginsPassive();
 }
 
 
@@ -249,11 +233,6 @@ void Pcsx2App::OnInitCmdLine(wxCmdLineParser& parser)
 
 	parser.AddSwitch(wxEmptyString, L"profiling", _("update options to ease profiling (debug)"));
 
-	ForPlugins([&](const PluginInfo* pi) {
-		parser.AddOption(wxEmptyString, pi->GetShortname().Lower(),
-						 pxsFmt(_("specify the file to use as the %s plugin"), WX_STR(pi->GetShortname())));
-	});
-
 	parser.SetSwitchChars(L"-");
 }
 
@@ -294,33 +273,6 @@ bool Pcsx2App::ParseOverrides(wxCmdLineParser& parser)
 		Overrides.GsWindowMode = GsWinMode_Fullscreen;
 	if (parser.Found(L"windowed"))
 		Overrides.GsWindowMode = GsWinMode_Windowed;
-
-	ForPlugins([&](const PluginInfo* pi) {
-		if (parser.Found(pi->GetShortname().Lower(), &dest))
-		{
-			if (wxFileExists(dest))
-				Console.Warning(pi->GetShortname() + L" override: " + dest);
-			else
-			{
-				wxDialogWithHelpers okcan(NULL, AddAppName(_("Plugin Override Error - %s")));
-
-				okcan += okcan.Heading(wxsFormat(
-					_("%s Plugin Override Error!  The following file does not exist or is not a valid %s plugin:\n\n"),
-					pi->GetShortname().c_str(), pi->GetShortname().c_str()));
-
-				okcan += okcan.GetCharHeight();
-				okcan += okcan.Text(dest);
-				okcan += okcan.GetCharHeight();
-				okcan += okcan.Heading(AddAppName(_("Press OK to use the default configured plugin, or Cancel to close %s.")));
-
-				if (wxID_CANCEL == pxIssueConfirmation(okcan, MsgButtons().OKCancel()))
-					parsed = false;
-			}
-
-			if (parsed)
-				Overrides.Filenames.Plugins[pi->id] = dest;
-		}
-	});
 
 	return parsed;
 }
@@ -521,7 +473,23 @@ bool Pcsx2App::OnInit()
 		{
 			g_Conf->EmuOptions.UseBOOT2Injection = true;
 
-			sApp.SysExecute(Startup.CdvdSource, Startup.ElfFile);
+			// wxPATH_NATIVE is broken on msw, it can delete the first directory after the volume
+			// EX: P://dir1/dir2/elf.elf -> P://dir2/ ???
+#ifdef _WIN32
+			wxFileName elfFile = wxFileName(Startup.ElfFile, wxPATH_WIN);
+#else
+			wxFileName elfFile = wxFileName(Startup.ElfFile, wxPATH_NATIVE);
+#endif
+
+			if (!elfFile.FileExists())
+			{
+				wxMessageBox(wxString::Format(_("Specified elf file %s does not exist!"), Startup.ElfFile), "PCSX2", wxICON_ERROR);
+			}
+			else
+			{
+				g_Conf->Folders.RunELF = elfFile.GetPath();
+				sApp.SysExecute(Startup.CdvdSource, Startup.ElfFile);
+			}
 		}
 		else if (Startup.SysAutoRunIrx)
 		{
@@ -649,12 +617,6 @@ void Pcsx2App::CleanupOnExit()
 		Console.Indent().Error(ex.FormatDiagnosticMessage());
 	}
 
-	// Notice: deleting the plugin manager (unloading plugins) here causes Lilypad to crash,
-	// likely due to some pending message in the queue that references lilypad procs.
-	// We don't need to unload plugins anyway tho -- shutdown is plenty safe enough for
-	// closing out all the windows.  So just leave it be and let the plugins get unloaded
-	// during the wxApp destructor. -- air
-
 	// FIXME: performing a wxYield() here may fix that problem. -- air
 
 	pxDoAssert = pxAssertImpl_LogIt;
@@ -687,10 +649,6 @@ void Pcsx2App::OnDestroyWindow(wxWindowDestroyEvent& evt)
 	//    console logger.  If so, we need to disable logging to the console window, or else
 	//    it'll crash.  (this is because the console log system uses a cached window handle
 	//    instead of looking the window up via it's ID -- fast but potentially unsafe).
-	//
-	//  * The virtual machine's plugins usually depend on the GS window handle being valid,
-	//    so if the GS window is the one being shut down then we need to make sure to close
-	//    out the Corethread before it vanishes completely from existence.
 
 
 	OnProgramLogClosed(evt.GetId());
@@ -742,6 +700,7 @@ Pcsx2App::Pcsx2App()
 		_("Save &As...");
 		_("&Help");
 		_("&Home");
+		_("&Window");
 
 		_("Show about dialog.")
 	}

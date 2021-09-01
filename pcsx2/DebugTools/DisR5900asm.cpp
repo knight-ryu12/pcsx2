@@ -142,6 +142,19 @@ const char * const COP2_REG_CTL[32] ={
 
 const char * const COP2_VFnames[4] = { "x", "y", "z", "w" };
 
+//gs privileged registers
+const char * const GS_REG_PRIV[19] = {
+	"PMODE","SMODE1","SMODE2","SRFSH","SYNCH1","SYNCH2","SYNCV",
+	"DISPFB1","DISPLAY1","DISPFB2","DISPLAY2","EXTBUF","EXTDATA",
+	"EXTWRITE","BGCOLOR","CSR","IMR","BUSDIR","SIGLBLID",
+};
+
+//gs privileged register addresses relative to 12000000h
+const u32 GS_REG_PRIV_ADDR[19] = {
+	0x00,0x10,0x20,0x30,0x40,0x50,0x60,0x70,0x80,0x90,
+	0xa0,0xb0,0xc0,0xd0,0xE0,0x1000,0x1010,0x1040,0x1080
+};
+
 void P_COP2_Unknown( std::string& output );
 void P_COP2_SPECIAL2( std::string& output );
 void P_COP2_SPECIAL( std::string& output );
@@ -1378,12 +1391,12 @@ void P_VMULAz( std::string& output ){_sap("vmulaz.%s ACC,%s,%sz") dest_string(),
 void P_VMULAw( std::string& output ){_sap("vmulaw.%s ACC,%s,%sw") dest_string(),COP2_REG_FP[DECODE_FS],COP2_REG_FP[DECODE_FT]);}
 void P_VMULAq( std::string& output ){_sap("vmulaq.%s ACC %s, Q") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VABS( std::string& output ){_sap("vabs.%s %s, %s") dest_string(),COP2_REG_FP[DECODE_FT], COP2_REG_FP[DECODE_FS]);}
-void P_VMULAi( std::string& output ){_sap("vmulaq.%s ACC %s, I") dest_string(), COP2_REG_FP[DECODE_FS]); }
+void P_VMULAi( std::string& output ){_sap("vmulai.%s ACC %s, I") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VCLIPw( std::string& output ){_sap("vclip %sxyz, %sw") COP2_REG_FP[DECODE_FS], COP2_REG_FP[DECODE_FT]);}
 void P_VADDAq( std::string& output ){_sap("vaddaq.%s ACC %s, Q") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VMADDAq( std::string& output ){_sap("vmaddaq.%s ACC %s, Q") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VADDAi( std::string& output ){_sap("vaddai.%s ACC %s, I") dest_string(), COP2_REG_FP[DECODE_FS]); }
-void P_VMADDAi( std::string& output ){_sap("vmaddai.%s ACC %s, Q") dest_string(), COP2_REG_FP[DECODE_FS]); }
+void P_VMADDAi( std::string& output ){_sap("vmaddai.%s ACC %s, I") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VSUBAq( std::string& output ){_sap("vsubaq.%s ACC %s, Q") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VMSUBAq( std::string& output ){_sap("vmsubaq.%s ACC %s, Q") dest_string(), COP2_REG_FP[DECODE_FS]); }
 void P_VSUBAi( std::string& output ){_sap("vsubai.%s ACC %s, I") dest_string(), COP2_REG_FP[DECODE_FS]); }

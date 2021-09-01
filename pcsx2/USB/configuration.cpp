@@ -23,7 +23,8 @@
 #include <vector>
 
 std::map<std::pair<int, std::string>, std::string> changedAPIs;
-wxString iniFile(L"USB.ini");
+std::map<std::pair<int, std::string>, int> changedSubtype;
+wxString iniFileUSB(L"USB.ini");
 static TSTDSTRING usb_path;
 TSTDSTRING IniPath;  // default path, just in case
 TSTDSTRING LogDir;
@@ -35,9 +36,9 @@ void USBsetSettingsDir()
 	if(!USBpathSet)
 	{
 #ifdef _WIN32
-		IniPath = GetSettingsFolder().Combine( iniFile ).GetFullPath(); // default path, just in case
+		IniPath = GetSettingsFolder().Combine( iniFileUSB ).GetFullPath(); // default path, just in case
 #else
-		IniPath = std::string(GetSettingsFolder().Combine( iniFile ).GetFullPath()); // default path, just in case
+		IniPath = std::string(GetSettingsFolder().Combine( iniFileUSB ).GetFullPath()); // default path, just in case
 #endif
 		USBpathSet = true;
 	}
@@ -59,6 +60,14 @@ std::string GetSelectedAPI(const std::pair<int, std::string>& pair)
 	if (it != changedAPIs.end())
 		return it->second;
 	return std::string();
+}
+
+int GetSelectedSubtype(const std::pair<int, std::string>& pair)
+{
+	auto it = changedSubtype.find(pair);
+	if (it != changedSubtype.end())
+		return it->second;
+	return 0;
 }
 
 bool LoadSettingValue(const TSTDSTRING& ini, const TSTDSTRING& section, const TCHAR* param, TSTDSTRING& value)
@@ -153,9 +162,6 @@ void SaveConfig()
 	SaveSetting(nullptr, 1, N_DEVICE_PORT, N_DEVICE, conf.Port[1]);
 #endif
 
-	SaveSetting(nullptr, 0, N_DEVICE_PORT, N_WHEEL_TYPE, conf.WheelType[0]);
-	SaveSetting(nullptr, 1, N_DEVICE_PORT, N_WHEEL_TYPE, conf.WheelType[1]);
-
 	for (auto& k : changedAPIs)
 	{
 #ifdef _WIN32
@@ -163,6 +169,11 @@ void SaveConfig()
 #else
 		SaveSetting(nullptr, k.first.first, k.first.second, N_DEVICE_API, k.second);
 #endif
+	}
+
+	for (auto& k : changedSubtype)
+	{
+		SaveSetting(nullptr, k.first.first, k.first.second, N_DEV_SUBTYPE, k.second);
 	}
 
 #ifdef _WIN32
@@ -174,8 +185,12 @@ void SaveConfig()
 
 void LoadConfig()
 {
-
 	USBsetSettingsDir();
+
+	static bool loaded = false;
+	if (loaded)
+		return;
+	loaded = true;
 
 #ifdef _WIN32
 	ciniFile.Load(IniPath);
@@ -195,9 +210,6 @@ void LoadConfig()
 	LoadSetting(nullptr, 0, N_DEVICE_PORT, N_DEVICE, conf.Port[0]);
 	LoadSetting(nullptr, 1, N_DEVICE_PORT, N_DEVICE, conf.Port[1]);
 #endif
-
-	LoadSetting(nullptr, 0, N_DEVICE_PORT, N_WHEEL_TYPE, conf.WheelType[0]);
-	LoadSetting(nullptr, 1, N_DEVICE_PORT, N_WHEEL_TYPE, conf.WheelType[1]);
 
 	auto& instance = RegisterDevice::instance();
 
@@ -226,6 +238,10 @@ void LoadConfig()
 
 		if (api.size())
 			changedAPIs[std::make_pair(i, conf.Port[i])] = api;
+
+		int subtype = 0;
+		LoadSetting(nullptr, i, conf.Port[i], N_DEV_SUBTYPE, subtype);
+		changedSubtype[std::make_pair(i, conf.Port[i])] = subtype;
 	}
 }
 

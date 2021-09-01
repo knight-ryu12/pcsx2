@@ -15,10 +15,9 @@
 
 #pragma once
 
+#include <dinput.h>
 #include <windows.h>
 #include <stdint.h>
-#define DIRECTINPUT_VERSION 0x0800
-#include <dinput.h>
 #include <atomic>
 #include <algorithm>
 #include <array>
@@ -26,9 +25,9 @@
 #include <map>
 #include <sstream>
 
-#include "../usb-pad.h"
-#include "../../configuration.h"
-#include "../../usb-pad/lg/lg_ff.h"
+#include "USB/usb-pad/usb-pad.h"
+#include "USB/configuration.h"
+#include "USB/usb-pad/lg/lg_ff.h"
 
 #define DINPUT_AXES_COUNT 32
 
@@ -36,9 +35,6 @@ namespace usb_pad
 {
 	namespace dx
 	{
-
-		extern int32_t BYPASSCAL;
-
 		//dinput control mappings
 
 		static const DWORD PRECMULTI = 100; //floating point precision multiplier, 100 - two digit precision after comma
@@ -73,6 +69,17 @@ namespace usb_pad
 			CID_R3,
 			CID_SELECT,
 			CID_START,
+			CID_BUTTON20,
+			CID_BUTTON21,
+			CID_BUTTON22,
+			CID_BUTTON23,
+			CID_BUTTON24,
+			CID_BUTTON25,
+			CID_BUTTON26,
+			CID_BUTTON27,
+			CID_BUTTON28,
+			CID_BUTTON29,
+			CID_BUTTON30,
 			CID_COUNT,
 		};
 
@@ -192,6 +199,7 @@ namespace usb_pad
 		extern std::vector<JoystickDevice*> g_pJoysticks;
 		extern std::map<int, InputMapped> g_Controls[2];
 
+		void ApplySettings(int port);
 		void LoadDInputConfig(int port, const char* dev_type);
 		void SaveDInputConfig(int port, const char* dev_type);
 
@@ -200,15 +208,19 @@ namespace usb_pad
 		void FreeDirectInput();
 		void PollDevices();
 		float ReadAxis(const InputMapped& im);
-		float ReadAxis(int port, ControlID axisid);
+		float ReadAxis(int port, int axisid);
 		float FilterControl(float input, LONG linear, LONG offset, LONG dead);
-		bool KeyDown(DWORD KeyID);
-		void TestForce(int port);
+
+		bool StartTestForce(int port);
+		bool UpdateTestForce(int port, unsigned int stage);
+		bool EndTestForce(int port);
+
 		LONG GetAxisValueFromOffset(int axis, const DIJOYSTATE2& j);
 		bool GetControl(int port, int id);
 		float GetAxisControl(int port, ControlID id);
 		void CreateFFB(int port, LPDIRECTINPUTDEVICE8 device, DWORD axis);
 		bool FindFFDevice(int port);
+		bool UpdateFFBSettings(int port, LPDIRECTINPUTDEVICE8 device);
 
 		void AddInputMap(int port, int cid, const InputMapped& im);
 		void RemoveInputMap(int port, int cid);

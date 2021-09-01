@@ -16,9 +16,9 @@
 #include "PrecompiledHeader.h"
 #include "padproxy.h"
 #include "usb-pad.h"
-#include "../qemu-usb/desc.h"
-#include "../usb-mic/usb-mic-singstar.h"
-#include "../shared/inifile_usb.h"
+#include "USB/qemu-usb/desc.h"
+#include "USB/usb-mic/usb-mic-singstar.h"
+#include "USB/shared/inifile_usb.h"
 
 namespace usb_pad
 {
@@ -411,8 +411,8 @@ namespace usb_pad
 		api = wstr_to_str(tmp);	
 #else
 		if (!LoadSetting(nullptr, port, usb_mic::SingstarDevice::TypeName(), N_DEVICE_API, api))
-#endif
 			return nullptr;
+#endif
 
 		USBDevice* mic = usb_mic::SingstarDevice::CreateDevice(port, api);
 		if (!mic)
@@ -467,7 +467,7 @@ namespace usb_pad
 		return RESULT_CANCELED;
 	}
 
-	int SeamicDevice::Freeze(int mode, USBDevice* dev, void* data)
+	int SeamicDevice::Freeze(FreezeAction mode, USBDevice* dev, void* data)
 	{
 		return 0;
 		//  SeamicState *s = (SeamicState *)dev;

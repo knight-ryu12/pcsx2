@@ -20,6 +20,7 @@
 #include "Gif_Unit.h"
 #include "VUmicro.h"
 #include "newVif.h"
+#include "MTVU.h"
 
 u32 g_vif1Cycles = 0;
 
@@ -30,6 +31,7 @@ __fi void vif1FLUSH()
 		vif1.waitforvu = true;
 		vif1.vifstalled.enabled = VifStallEnable(vif1ch);
 		vif1.vifstalled.value = VIF_TIMING_BREAK;
+		vif1Regs.stat.VEW = true;
 	}
 }
 
@@ -68,11 +70,9 @@ void vif1TransferToMemory()
 	}
 
 	GetMTGS().WaitGS();
-	if (GSinitReadFIFO2) {
-		GetMTGS().SendPointerPacket(GS_RINGTYPE_INIT_READ_FIFO2, size, pMem);
-		GetMTGS().WaitGS(false); // wait without reg sync
-	}
-	GSreadFIFO2((u64*)pMem, size);
+	GetMTGS().SendPointerPacket(GS_RINGTYPE_INIT_READ_FIFO2, size, pMem);
+	GetMTGS().WaitGS(false); // wait without reg sync
+	GSreadFIFO2((u8*)pMem, size);
 //	pMem += size;
 
 	//Some games such as Alex Ferguson's Player Manager 2001 reads less than GSLastDownloadSize by VIF then reads the remainder by FIFO
@@ -231,18 +231,21 @@ __fi void vif1SetupTransfer()
 
 __fi void vif1VUFinish()
 {
-	if (VU0.VI[REG_VPU_STAT].UL & 0x400)
+	if (VU0.VI[REG_VPU_STAT].UL & 0x500)
 	{
+		if(THREAD_VU1)
+			vu1Thread.Get_MTVUChanges();
+
 		CPU_INT(VIF_VU1_FINISH, 128);
 		return;
 	}
-
+	
 	if (VU0.VI[REG_VPU_STAT].UL & 0x100)
 	{
-		int _cycles = VU1.cycle;
+		u32 _cycles = VU1.cycle;
 		//DevCon.Warning("Finishing VU1");
-		vu1Finish();
-		CPU_INT(VIF_VU1_FINISH, (VU1.cycle - _cycles) * BIAS); 
+		vu1Finish(false);
+		CPU_INT(VIF_VU1_FINISH, VU1.cycle - _cycles);
 		return;
 	}
 
@@ -267,7 +270,7 @@ __fi void vif1VUFinish()
 		vif1.waitforvu = false;
 		ExecuteVU(1);
 		//Check if VIF is already scheduled to interrupt, if it's waiting, kick it :P
-		if((cpuRegs.interrupt & (1<<DMAC_VIF1 | 1 << DMAC_MFIFO_VIF)) == 0 && vif1ch.chcr.STR && !vif1Regs.stat.INT)
+		if((cpuRegs.interrupt & ((1<<DMAC_VIF1) | (1 << DMAC_MFIFO_VIF))) == 0 && vif1ch.chcr.STR && !vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
 		{
 			if(dmacRegs.ctrl.MFD == MFD_VIF1)
 				vifMFIFOInterrupt();
@@ -285,7 +288,7 @@ __fi void vif1Interrupt()
 
 	g_vif1Cycles = 0;
 
-	if( gifRegs.stat.APATH == 2  && gifUnit.gifPath[GIF_PATH_2].isDone())
+	if( gifRegs.stat.APATH == 2 && gifUnit.gifPath[GIF_PATH_2].isDone())
 	{
 		gifRegs.stat.APATH = 0;
 		gifRegs.stat.OPH = 0;
@@ -298,7 +301,7 @@ __fi void vif1Interrupt()
 		//Console.WriteLn("VIFMFIFO\n");
 		// Test changed because the Final Fantasy 12 opening somehow has the tag in *Undefined* mode, which is not in the documentation that I saw.
 		if (vif1ch.chcr.MOD == NORMAL_MODE) Console.WriteLn("MFIFO mode is normal (which isn't normal here)! %x", vif1ch.chcr._u32);
-		vif1Regs.stat.FQC = std::min((u16)0x10, vif1ch.qwc);
+		vif1Regs.stat.FQC = std::min((u32)0x10, vif1ch.qwc);
 		vifMFIFOInterrupt();
 		return;
 	}
@@ -316,7 +319,7 @@ __fi void vif1Interrupt()
 			return;
 		}
 		vif1Regs.stat.VGW = 0; //Path 3 isn't busy so we don't need to wait for it.
-		vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u16)16);
+		vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u32)16);
 		//Simulated GS transfer time done, clear the flags
 	}
 	
@@ -324,6 +327,7 @@ __fi void vif1Interrupt()
 	{
 		//DevCon.Warning("Waiting on VU1");
 		//CPU_INT(DMAC_VIF1, 16);
+		CPU_INT(VIF_VU1_FINISH, 16);
 		return;
 	}
 	if (!vif1ch.chcr.STR) Console.WriteLn("Vif1 running when CHCR == %x", vif1ch.chcr._u32);
@@ -348,7 +352,7 @@ __fi void vif1Interrupt()
 
 			//NFSHPS stalls when the whole packet has gone across (it stalls in the last 32bit cmd)
 			//In this case VIF will end
-			vif1Regs.stat.FQC = std::min((u16)0x10, vif1ch.qwc);
+			vif1Regs.stat.FQC = std::min((u32)0x10, vif1ch.qwc);
 			if((vif1ch.qwc > 0 || !vif1.done) && !CHECK_VIF1STALLHACK)	
 			{
 				vif1Regs.stat.VPS = VPS_DECODING; //If there's more data you need to say it's decoding the next VIF CMD (Onimusha - Blade Warriors)
@@ -375,7 +379,7 @@ __fi void vif1Interrupt()
             _VIF1chain();
             // VIF_NORMAL_FROM_MEM_MODE is a very slow operation.
             // Timesplitters 2 depends on this beeing a bit higher than 128.
-            if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u16)16);
+            if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u32)16);
 		
 			if(!(vif1Regs.stat.VGW && gifUnit.gifPath[GIF_PATH_3].state != GIF_PATH_IDLE)) //If we're waiting on GIF, stop looping, (can be over 1000 loops!)
 				CPU_INT(DMAC_VIF1, g_vif1Cycles);
@@ -392,7 +396,7 @@ __fi void vif1Interrupt()
             }
 
             if ((vif1.inprogress & 0x1) == 0) vif1SetupTransfer();
-            if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u16)16);
+            if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u32)16);
 
 			if(!(vif1Regs.stat.VGW && gifUnit.gifPath[GIF_PATH_3].state != GIF_PATH_IDLE)) //If we're waiting on GIF, stop looping, (can be over 1000 loops!)
 	            CPU_INT(DMAC_VIF1, g_vif1Cycles);
@@ -416,14 +420,14 @@ __fi void vif1Interrupt()
 		gifRegs.stat.OPH = false;
 	}
 
-	if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u16)16);
+	if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min(vif1ch.qwc, (u32)16);
 
 	vif1ch.chcr.STR = false;
 	vif1.vifstalled.enabled = false;
 	vif1.irqoffset.enabled = false;
 	if(vif1.queued_program) vifExecQueue(1);
 	g_vif1Cycles = 0;
-	DMA_LOG("VIF1 DMA End");
+	VIF_LOG("VIF1 DMA End");
 	hwDmacIrq(DMAC_VIF1);
 
 }
@@ -436,6 +440,7 @@ void dmaVIF1()
 	        vif1ch.tadr, vif1ch.asr0, vif1ch.asr1);
 
 	g_vif1Cycles = 0;
+	vif1.inprogress = 0;
 
 	if (vif1ch.qwc > 0)   // Normal Mode
 	{
@@ -479,8 +484,11 @@ void dmaVIF1()
 		
 	}
 
-	if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min((u16)0x10, vif1ch.qwc);
+	if (vif1ch.chcr.DIR) vif1Regs.stat.FQC = std::min((u32)0x10, vif1ch.qwc);
 
-	// Chain Mode
-	CPU_INT(DMAC_VIF1, 4);
+	// Check VIF isn't stalled before starting the loop.
+	// Batman Vengence does something stupid and instead of cancelling a stall it tries to restart VIF, THEN check the stall
+	// However if VIF FIFO is reversed, it can continue
+	if (!vif1ch.chcr.DIR || !vif1Regs.stat.test(VIF1_STAT_VSS | VIF1_STAT_VIS | VIF1_STAT_VFS))
+		CPU_INT(DMAC_VIF1, 4);
 }

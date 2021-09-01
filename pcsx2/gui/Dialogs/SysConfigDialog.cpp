@@ -1,5 +1,5 @@
 /*  PCSX2 - PS2 Emulator for PCs
- *  Copyright (C) 2002-2010  PCSX2 Dev Team
+ *  Copyright (C) 2002-2021  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -41,23 +41,6 @@ static void CheckHacksOverrides()
 	// [TODO] : List command line option overrides in action?
 
 	pxIssueConfirmation( dialog, MsgButtons().OK(), L"Dialog.SysConfig.Overrides" );
-}
-
-static void CheckPluginsOverrides()
-{
-	if( !wxGetApp().Overrides.HasPluginsOverride() ) return;
-	
-	// The user has commandline overrides enabled, so the options they see here and/or apply won't match
-	// the commandline overrides.  Let them know!
-
-	wxDialogWithHelpers dialog( NULL, _("Components Overrides Warning") );
-	
-	dialog += dialog.Text( pxEt( L"Warning!  You are running PCSX2 with command line options that override your configured plugin and/or folder settings.  These command line options will not be reflected in the settings dialog, and will be disabled when you apply settings changes here."
-	));
-
-	// [TODO] : List command line option overrides in action?
-
-	pxIssueConfirmation( dialog, MsgButtons().OK(), L"Dialog.ComponentsConfig.Overrides" );
 }
 
 //Behavior when unchecking 'Presets' is to keep the GUI settings at the last preset (even if not yet applied).
@@ -209,15 +192,18 @@ void Dialogs::SysConfigDialog::Cancel()
 }
 
 Dialogs::SysConfigDialog::SysConfigDialog(wxWindow* parent)
-	: BaseConfigurationDialog( parent, AddAppName(_("Emulation Settings - %s")), 580 )
+	: BaseConfigurationDialog( parent, AddAppName(_("General Settings - %s")), 580 )
 {
 	ScopedBusyCursor busy( Cursor_ReallyBusy );
 
 	CreateListbook( wxGetApp().GetImgList_Config() );
 	const AppImageIds::ConfigIds& cfgid( wxGetApp().GetImgId().Config );
+	SetIcons(wxGetApp().GetIconBundle());
 
 	//NOTE: all pages which are added to SysConfigDialog must be of class BaseApplicableConfigPanel or derived.
 	//		see comment inside UpdateGuiForPreset implementation for more info.
+	AddPage<BiosSelectorPanel>		( pxL("BIOS"),			cfgid.Cpu );
+	AddPage<StandardPathsPanel>		( pxL("Folders"),		cfgid.Paths );
 	AddPage<CpuPanelEE>				( pxL("EE/IOP"),		cfgid.Cpu );
 	AddPage<CpuPanelVU>				( pxL("VUs"),			cfgid.Cpu );
 	AddPage<VideoPanel>				( pxL("GS"),			cfgid.Cpu );
@@ -233,27 +219,6 @@ Dialogs::SysConfigDialog::SysConfigDialog(wxWindow* parent)
 
 	if( wxGetApp().Overrides.HasCustomHacks() )
 		wxGetApp().PostMethod( CheckHacksOverrides );
-}
-
-Dialogs::ComponentsConfigDialog::ComponentsConfigDialog(wxWindow* parent)
-	: BaseConfigurationDialog( parent, AddAppName(_("Components Selectors - %s")),  750 )
-{
-	ScopedBusyCursor busy( Cursor_ReallyBusy );
-
-	CreateListbook( wxGetApp().GetImgList_Config() );
-	const AppImageIds::ConfigIds& cfgid( wxGetApp().GetImgId().Config );
-
-	AddPage<PluginSelectorPanel>	( pxL("Plugins"),		cfgid.Plugins );
-	AddPage<BiosSelectorPanel>		( pxL("BIOS"),			cfgid.Cpu );
-	AddPage<StandardPathsPanel>		( pxL("Folders"),		cfgid.Paths );
-
-	AddListbook();
-	AddOkCancel();
-
-	SetSizerAndFit(GetSizer());
-
-	if( wxGetApp().Overrides.HasPluginsOverride() )
-		wxGetApp().PostMethod( CheckPluginsOverrides );
 }
 
 Dialogs::InterfaceLanguageDialog::InterfaceLanguageDialog(wxWindow* parent)

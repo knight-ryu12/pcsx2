@@ -73,21 +73,15 @@ FunctionEnd
 Function TempFilesOut
   SetOutPath "$TEMP\PCSX2 ${APP_VERSION}"
     File ..\bin\pcsx2.exe
-    File ..\bin\GameIndex.dbf
+    File ..\bin\GameIndex.yaml
     File ..\bin\cheats_ws.zip
     File ..\bin\PCSX2_keys.ini.default
   SetOutPath "$TEMP\PCSX2 ${APP_VERSION}\Docs"
     File ..\bin\docs\*
 
   SetOutPath "$TEMP\PCSX2 ${APP_VERSION}\Shaders"
-    File ..\bin\shaders\GSdx.fx
-    File ..\bin\shaders\GSdx_FX_Settings.ini
-
-  SetOutPath "$TEMP\PCSX2 ${APP_VERSION}\Plugins"
-    File /nonfatal ..\bin\Plugins\gsdx32-sse2.dll
-    File /nonfatal ..\bin\Plugins\gsdx32-sse4.dll
-    File /nonfatal ..\bin\Plugins\gsdx32-avx2.dll
-    File /nonfatal ..\bin\Plugins\lilypad.dll
+    File ..\bin\shaders\GS.fx
+    File ..\bin\shaders\GS_FX_Settings.ini
 
   SetOutPath "$TEMP\PCSX2 ${APP_VERSION}\Langs"
     File /nonfatal /r ..\bin\Langs\*.mo

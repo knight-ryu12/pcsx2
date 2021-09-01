@@ -29,7 +29,6 @@
 #include "GS.h" // for gsVideoMode
 #include "Elfheader.h"
 #include "ps2/BiosTools.h"
-#include "GameDatabase.h"
 
 // This typically reflects the Sony-assigned serial code for the Disc, if one exists.
 //  (examples:  SLUS-2113, etc).
@@ -137,6 +136,34 @@ NVMLayout* getNvmLayout()
 	return nvmLayout;
 }
 
+static void cdvdCreateNewNVM(const wxString& filename)
+{
+	wxFFile fp(filename, L"wb");
+	if (!fp.IsOpened())
+		throw Exception::CannotCreateStream(filename);
+
+	u8 zero[1024] = { 0 };
+	fp.Write(zero, sizeof(zero));
+
+	// Write NVM ILink area with dummy data (Age of Empires 2)
+	// Also write language data defaulting to English (Guitar Hero 2)
+
+	NVMLayout* nvmLayout = getNvmLayout();
+	u8 ILinkID_Data[8] = { 0x00, 0xAC, 0xFF, 0xFF, 0xFF, 0xFF, 0xB9, 0x86 };
+
+	fp.Seek(*(s32*)(((u8*)nvmLayout) + offsetof(NVMLayout, ilinkId)));
+	fp.Write(ILinkID_Data, sizeof(ILinkID_Data));
+
+	u8 biosLanguage[16];
+	memcpy(biosLanguage, &biosLangDefaults[BiosRegion][0], 16);
+	// Config sections first 16 bytes are generally blank expect the last byte which is PS1 mode stuff
+	// So let's ignore that and just write the PS2 mode stuff
+	fp.Seek(*(s32*)(((u8*)nvmLayout) + offsetof(NVMLayout, config1)) + 0x10);
+	fp.Write(biosLanguage, sizeof(biosLanguage));
+
+	fp.Close();
+}
+
 // Throws Exception::CannotCreateStream if the file cannot be opened for reading, or cannot
 // be created for some reason.
 static void cdvdNVM(u8* buffer, int offset, size_t bytes, bool read)
@@ -153,20 +180,29 @@ static void cdvdNVM(u8* buffer, int offset, size_t bytes, bool read)
 	{
 		Console.Warning("NVM File Not Found, creating substitute...");
 
-		wxFFile fp(fname, L"wb");
+		cdvdCreateNewNVM(fname);
+	}
+	else
+	{
+		u8 LanguageParams[16];
+		u8 zero[16] = { 0 };
+		NVMLayout* nvmLayout = getNvmLayout();
+
+		wxFFile fp(fname, L"r+b");
 		if (!fp.IsOpened())
 			throw Exception::CannotCreateStream(fname);
 
-		u8 zero[1024] = {0};
-		fp.Write(zero, sizeof(zero));
+		fp.Seek(*(s32*)(((u8*)nvmLayout) + offsetof(NVMLayout, config1)) + 0x10);
+		fp.Read(LanguageParams, 16);
 
-		//Write NVM ILink area with dummy data (Age of Empires 2)
+		fp.Close();
 
-		NVMLayout* nvmLayout = getNvmLayout();
-		u8 ILinkID_Data[8] = {0x00, 0xAC, 0xFF, 0xFF, 0xFF, 0xFF, 0xB9, 0x86};
+		if (memcmp(LanguageParams, zero, sizeof(LanguageParams)) == 0)
+		{
+			Console.Warning("Language Parameters missing, filling in defaults");
 
-		fp.Seek(*(s32*)(((u8*)nvmLayout) + offsetof(NVMLayout, ilinkId)));
-		fp.Write(ILinkID_Data, sizeof(ILinkID_Data));
+			cdvdCreateNewNVM(fname);
+		}
 	}
 
 	wxFFile fp(fname, L"r+b");
@@ -257,6 +293,11 @@ static void cdvdReadMAC(u8* num)
 static void cdvdWriteMAC(const u8* num)
 {
 	setNvmData(num, 0, 8, offsetof(NVMLayout, mac));
+}
+
+void cdvdReadLanguageParams(u8* config)
+{
+	getNvmData(config, 0xF, 16, offsetof(NVMLayout, config1));
 }
 
 s32 cdvdReadConfig(u8* config)
@@ -592,7 +633,35 @@ static s32 cdvdReadDvdDualInfo(s32* dualType, u32* layer1Start)
 
 static uint cdvdBlockReadTime(CDVD_MODE_TYPE mode)
 {
-	return (PSXCLK * cdvd.BlockSize) / (((mode == MODE_CDROM) ? PSX_CD_READSPEED : PSX_DVD_READSPEED) * cdvd.Speed);
+	int numSectors = 0;
+	int offset = 0;
+	// Sector counts are taken from google for Single layer, Dual layer DVD's and for 700MB CD's
+	switch (cdvd.Type)
+	{
+		case CDVD_TYPE_DETCTDVDS:
+		case CDVD_TYPE_PS2DVD:
+			numSectors = 2298496;
+			break;
+		case CDVD_TYPE_DETCTDVDD:
+			numSectors = 4173824 / 2; // Total sectors for both layers, assume half per layer
+			u32 layer1Start;
+			s32 dualType;
+
+			// Layer 1 needs an offset as it goes back to the middle of the disc
+			cdvdReadDvdDualInfo(&dualType, &layer1Start);
+			if (cdvd.Sector >= layer1Start)
+				offset = layer1Start;
+			break;
+		default: // Pretty much every CD format
+			numSectors = 360000;
+			break;
+	}
+	// Read speed is roughly 37% at lowest and full speed on outer edge. I imagine it's more logarithmic than this
+	// Required for Shadowman to work
+	// Use SeekToSector as Sector hasn't been updated yet
+	const float sectorSpeed = (((float)(cdvd.SeekToSector-offset) / numSectors) * 0.63f) + 0.37f; 
+	//DevCon.Warning("Read speed %f sector %d\n", sectorSpeed, cdvd.Sector);
+	return ((PSXCLK * cdvd.BlockSize) / ((float)(((mode == MODE_CDROM) ? PSX_CD_READSPEED : PSX_DVD_READSPEED) * cdvd.Speed) * sectorSpeed));
 }
 
 void cdvdReset()
@@ -877,8 +946,7 @@ __fi void cdvdReadInterrupt()
 
 		cdvd.Reading = false;
 
-		// Any other value besides 0 should be considered invalid here (wtf is that wacky
-		// plugin trying to do?)
+		// Any other value besides 0 should be considered invalid here
 		pxAssert(cdvd.RErr == 0);
 	}
 
@@ -1260,7 +1328,7 @@ static void cdvdWrite04(u8 rt)
 			cdvd.ReadTime = cdvdBlockReadTime(MODE_CDROM);
 			CDVDREAD_INT(cdvdStartSeek(cdvd.SeekToSector, MODE_CDROM));
 
-			// Read-ahead by telling the plugin about the track now.
+			// Read-ahead by telling CDVD about the track now.
 			// This helps improve performance on actual from-cd emulation
 			// (ie, not using the hard drive)
 			cdvd.RErr = DoCDVDreadTrack(cdvd.SeekToSector, cdvd.ReadMode);
@@ -1296,7 +1364,7 @@ static void cdvdWrite04(u8 rt)
 			cdvd.ReadTime = cdvdBlockReadTime(MODE_DVDROM);
 			CDVDREAD_INT(cdvdStartSeek(cdvd.SeekToSector, MODE_DVDROM));
 
-			// Read-ahead by telling the plugin about the track now.
+			// Read-ahead by telling CDVD about the track now.
 			// This helps improve performance on actual from-cd emulation
 			// (ie, not using the hard drive)
 			cdvd.RErr = DoCDVDreadTrack(cdvd.SeekToSector, cdvd.ReadMode);
@@ -1406,25 +1474,13 @@ static __fi void cdvdWrite0F(u8 rt)
 }
 
 static __fi void cdvdWrite14(u8 rt)
-{ // PS1 MODE?? // This should be done in the SBUS_F240 bit 19 write in HwWrite.cpp
-	//u32 cycle = psxRegs.cycle;
-
-	//if (rt == 0xFE)
-		//Console.Warning("*PCSX2*: go PS1 mode DISC SPEED = FAST");
-	//else
-		//Console.Warning("*PCSX2*: go PS1 mode DISC SPEED = %dX", rt);
-
-	//psxReset();
-	//PSXCLK = 33868800;
-	//setPsxSpeed();
-	// psxmode: todo: we should recalculate video timings for iop and ee. how to do that best?
-	// unlike regular ps2 games, the video mode for ps1driver isn't going through the GS set mode syscall
-	// so.. something like this? :
-	//gsSetVideoMode(GS_VideoMode::NTSC);
-	//gsSetVideoMode(GS_VideoMode::DVD_NTSC);
-	//psxHu32(0x1f801450) = 0x8;
-	//psxHu32(0x1f801078) = 1;
-	//psxRegs.cycle = cycle;
+{
+	// Rama Or WISI guessed that "2" literally meant 2x but we can get 0x02 or 0xfe for "Standard" or "Fast" it appears. It is unsure what those values are meant to be
+	// Tests with ref suggest this register is write only? - Weirdbeard
+	if (rt == 0xFE)
+		Console.Warning("*PCSX2*: Unimplemented PS1 mode DISC SPEED = FAST");
+	else
+		Console.Warning("*PCSX2*: Unimplemented PS1 mode DISC SPEED = STANDARD");
 }
 
 static __fi void fail_pol_cal()
@@ -1486,6 +1542,14 @@ static void cdvdWrite16(u8 rt) // SCOMMAND
 						cdvd.Result[3] = 0x10; //day
 						cdvd.Result[4] = 0x01; //hour
 						cdvd.Result[5] = 0x30; //min
+						break;
+
+					case 0xEF: // read console temperature (1:3)
+						// This returns a fixed value of 30.5 C
+						SetResultSize(3);
+						cdvd.Result[0] = 0; // returns 0 on success
+						cdvd.Result[1] = 0x0F; // last 8 bits for integer
+						cdvd.Result[2] = 0x05; // leftmost bit for integer, other 7 bits for decimal place
 						break;
 
 					default:
@@ -1726,8 +1790,24 @@ static void cdvdWrite16(u8 rt) // SCOMMAND
 				//		case 0x26: // cdvdman_call128 (0,3) - In V10 Bios
 				//			break;
 
-				//		case 0x27: // cdvdman_call148 (0:13) - In V10 Bios
-				//			break;
+			case 0x27: // GetPS1BootParam (0:13) - called only by China region PS2 models
+
+				// Return Disc Serial which is passed to PS1DRV and later used to find matching config.			
+				SetResultSize(13);
+				cdvd.Result[0] = 0;
+				cdvd.Result[1] = DiscSerial[0];
+				cdvd.Result[2] = DiscSerial[1];
+				cdvd.Result[3] = DiscSerial[2];
+				cdvd.Result[4] = DiscSerial[3];
+				cdvd.Result[5] = DiscSerial[4];
+				cdvd.Result[6] = DiscSerial[5];
+				cdvd.Result[7] = DiscSerial[6];
+				cdvd.Result[8] = DiscSerial[7];
+				cdvd.Result[9] = DiscSerial[9]; // Skipping dot here is required.
+				cdvd.Result[10] = DiscSerial[10];
+				cdvd.Result[11] = DiscSerial[11];
+				cdvd.Result[12] = DiscSerial[12];
+				break;
 
 				//		case 0x28: // cdvdman_call150 (1:1) - In V10 Bios
 				//			break;
@@ -2121,9 +2201,9 @@ void cdvdWrite(u8 key, u8 rt)
 		case 0x0F:
 			cdvdWrite0F(rt);
 			break;
-		//case 0x14:
-		//	cdvdWrite14(rt);
-		//	break;
+		case 0x14:
+			cdvdWrite14(rt);
+			break;
 		case 0x16:
 			cdvdWrite16(rt);
 			break;

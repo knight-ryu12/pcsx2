@@ -14,14 +14,15 @@
  */
 
 #pragma once
-#include "../../linux/util.h"
+#include "evdev-ff.h"
+#include "shared.h"
+#include "USB/linux/util.h"
+#include "USB/readerwriterqueue/readerwriterqueue.h"
+#include "Utilities/Console.h"
 //#include <dirent.h> //gtk.h pulls in?
 #include <thread>
 #include <array>
 #include <atomic>
-#include "evdev-ff.h"
-#include "shared.h"
-#include "../../readerwriterqueue/readerwriterqueue.h"
 
 namespace usb_pad
 {

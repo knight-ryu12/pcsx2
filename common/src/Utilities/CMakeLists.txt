@@ -1,22 +1,15 @@
 # Check that people use the good file
 if(NOT TOP_CMAKE_WAS_SOURCED)
-    message(FATAL_ERROR "
-    You did not 'cmake' the good CMakeLists.txt file. Use the one in the top dir.
-    It is advice to delete all wrongly generated cmake stuff => CMakeFiles & CMakeCache.txt")
+	message(FATAL_ERROR "
+	You did not 'cmake' the good CMakeLists.txt file. Use the one in the top dir.
+	It is advice to delete all wrongly generated cmake stuff => CMakeFiles & CMakeCache.txt")
 endif(NOT TOP_CMAKE_WAS_SOURCED)
 
+add_library(Utilities)
 
-set(Output Utilities)
-
-set(CommonFlags
-    )
-
-set(UtilitiesFinalFlags ${CommonFlags})
-
-# variable with all sources of this library
-set(UtilitiesSources
+# Utilities sources
+target_sources(Utilities PRIVATE
 	VirtualMemory.cpp
-	AlignedMalloc.cpp
 	../../include/Utilities/FixedPointTypes.inl
 	../../include/Utilities/EventSource.inl
 	../../include/Utilities/SafeArray.inl
@@ -26,7 +19,6 @@ set(UtilitiesSources
 	Exceptions.cpp
 	FastFormatString.cpp
 	IniInterface.cpp
-	Linux/LnxHostSys.cpp
 	Mutex.cpp
 	PathUtils.cpp
 	PrecompiledHeader.cpp
@@ -44,10 +36,10 @@ set(UtilitiesSources
 	wxAppWithHelpers.cpp
 	wxGuiTools.cpp
 	wxHelpers.cpp
-	)
+)
 
-# variable with all headers of this library
-set(UtilitiesHeaders
+# Utilities headers
+target_sources(Utilities PRIVATE
 	../../include/Utilities/Assertions.h
 	../../include/Utilities/boost_spsc_queue.hpp
 	../../include/Utilities/CheckedStaticBox.h
@@ -57,7 +49,6 @@ set(UtilitiesHeaders
 	../../include/Utilities/Exceptions.h
 	../../include/Utilities/FixedPointTypes.h
 	../../include/Utilities/General.h
-	../../include/Utilities/MakeUnique.h
 	../../include/Utilities/MemcpyFast.h
 	../../include/Utilities/MemsetFast.inl
 	../../include/Utilities/Path.h
@@ -83,41 +74,46 @@ set(UtilitiesHeaders
 	ThreadingInternal.h
 )
 
-if(APPLE)
-	LIST(APPEND UtilitiesSources
-		Darwin/DarwinThreads.cpp
-		Darwin/DarwinMisc.cpp
-		Darwin/DarwinSemaphore.cpp
-	)
-elseif(Windows)
-	LIST(APPEND UtilitiesSources
-		x86/MemcpyFast.cpp
+if(WIN32)
+	target_sources(Utilities PRIVATE
 		Windows/WinThreads.cpp
 		Windows/WinHostSys.cpp
 		Windows/WinMisc.cpp
-	)
-else()
-	LIST(APPEND UtilitiesSources
-		Linux/LnxThreads.cpp
-		Linux/LnxMisc.cpp
 		Semaphore.cpp
 	)
+	if(_M_X86_32)
+		target_sources(Utilities PRIVATE x86/MemcpyFast.cpp)
+	endif()
+	target_link_libraries(Utilities PUBLIC pthreads4w Winmm.lib)
+else()
+	target_sources(Utilities PRIVATE
+		AlignedMalloc.cpp
+		Linux/LnxHostSys.cpp
+	)
+	if(APPLE)
+		target_sources(Utilities PRIVATE
+			Darwin/DarwinThreads.cpp
+			Darwin/DarwinMisc.cpp
+			Darwin/DarwinSemaphore.cpp
+		)
+	else()
+		target_sources(Utilities PRIVATE
+			Linux/LnxThreads.cpp
+			Linux/LnxMisc.cpp
+			Semaphore.cpp
+		)
+	endif()
 endif()
 
-set(UtilitiesFinalSources
-	${UtilitiesSources}
-	${UtilitiesHeaders}
-)
+if(USE_VTUNE)
+	target_link_libraries(Utilities PUBLIC Vtune::Vtune)
+endif()
 
-set(UtilitiesFinalLibs
-    ${LIBC_LIBRARIES} # Gold (new linux linker) does not get automatically dependency of dependency
-	${wxWidgets_LIBRARIES}
-)
-
-add_pcsx2_lib(${Output} "${UtilitiesFinalSources}" "${UtilitiesFinalLibs}" "${UtilitiesFinalFlags}")
-add_pcsx2_lib(${Output}_NO_TLS "${UtilitiesFinalSources}" "${UtilitiesFinalLibs}" "${UtilitiesFinalFlags} -DPCSX2_THREAD_LOCAL=0")
-
+target_link_libraries(Utilities PRIVATE ${LIBC_LIBRARIES} PUBLIC wxWidgets::all)
+target_compile_features(Utilities PUBLIC cxx_std_17)
+target_include_directories(Utilities PUBLIC ../../../3rdparty/include ../../include PRIVATE ../../include/Utilities .)
+target_compile_definitions(Utilities PUBLIC "${PCSX2_DEFS}")
+target_compile_options(Utilities PRIVATE "${PCSX2_WARNINGS}")
 if(COMMAND target_precompile_headers)
-	target_precompile_headers(${Output} PRIVATE PrecompiledHeader.h)
-	target_precompile_headers(${Output}_NO_TLS PRIVATE PrecompiledHeader.h)
+	target_precompile_headers(Utilities PRIVATE PrecompiledHeader.h)
 endif()

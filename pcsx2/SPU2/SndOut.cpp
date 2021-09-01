@@ -84,14 +84,12 @@ SndOutModule* mods[] =
 		&NullOut,
 #ifdef _MSC_VER
 		XAudio2Out,
-		WaveOut,
 #endif
 #if defined(SPU2X_PORTAUDIO)
 		PortaudioOut,
 #endif
-#if defined(__linux__) /* && defined(__ALSA__)*/
+#if defined(__linux__) || defined(__APPLE__)
 		SDLOut,
-		AlsaOut,
 #endif
 		nullptr // signals the end of our list
 };

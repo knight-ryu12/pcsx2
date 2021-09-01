@@ -14,18 +14,26 @@
  */
 
 #include "PrecompiledHeader.h"
+
+#include <jpgd/jpge.h>
 #include "videodev.h"
 #include "cam-windows.h"
 #include "usb-eyetoy-webcam.h"
 #include "jo_mpeg.h"
 
-#include "../Win32/Config_usb.h"
-#include "../Win32/resource_usb.h"
+#include "USB/Win32/Config_usb.h"
+#include "USB/Win32/resource_usb.h"
 
 namespace usb_eyetoy
 {
 	namespace windows_api
 	{
+		buffer_t mpeg_buffer{};
+		std::mutex mpeg_mutex;
+		int frame_width;
+		int frame_height;
+		FrameFormat frame_format;
+		bool mirroring_enabled = true;
 
 		HRESULT DirectShow::CallbackHandler::SampleCB(double time, IMediaSample* sample)
 		{
@@ -55,29 +63,30 @@ namespace usb_eyetoy
 		{
 			std::vector<std::wstring> devList;
 
-			ICreateDevEnum* pCreateDevEnum = 0;
+			ICreateDevEnum* pCreateDevEnum = nullptr;
 			HRESULT hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pCreateDevEnum));
 			if (FAILED(hr))
 			{
-				Console.Warning("Error Creating Device Enumerator");
+				Console.Warning("Camera: Error Creating Device Enumerator");
 				return devList;
 			}
 
-			IEnumMoniker* pEnum = 0;
+			IEnumMoniker* pEnum = nullptr;
 			hr = pCreateDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnum, 0);
 			if (hr != S_OK)
 			{
-				Console.Warning("You have no video capture hardware");
+				Console.Warning("Camera: You have no video capture hardware");
 				return devList;
 			};
 
-			IMoniker* pMoniker = NULL;
+			IMoniker* pMoniker = nullptr;
 			while (pEnum->Next(1, &pMoniker, NULL) == S_OK)
 			{
-				IPropertyBag* pPropBag;
-				HRESULT hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
+				IPropertyBag* pPropBag = nullptr;
+				hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
 				if (FAILED(hr))
 				{
+					Console.Warning("Camera: BindToStorage err : %x", hr);
 					pMoniker->Release();
 					continue;
 				}
@@ -112,7 +121,7 @@ namespace usb_eyetoy
 			HRESULT hr = CoCreateInstance(CLSID_CaptureGraphBuilder2, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pGraphBuilder));
 			if (FAILED(hr))
 			{
-				Console.Warning("CoCreateInstance CLSID_CaptureGraphBuilder2 err : %x\n", hr);
+				Console.Warning("Camera: CoCreateInstance CLSID_CaptureGraphBuilder2 err : %x", hr);
 				return -1;
 			}
 
@@ -120,57 +129,56 @@ namespace usb_eyetoy
 			hr = CoCreateInstance(CLSID_FilterGraph, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pGraph));
 			if (FAILED(hr))
 			{
-				Console.Warning("CoCreateInstance CLSID_FilterGraph err : %x\n", hr);
+				Console.Warning("Camera: CoCreateInstance CLSID_FilterGraph err : %x", hr);
 				return -1;
 			}
 
 			hr = pGraphBuilder->SetFiltergraph(pGraph);
 			if (FAILED(hr))
 			{
-				Console.Warning("SetFiltergraph err : %x\n", hr);
+				Console.Warning("Camera: SetFiltergraph err : %x", hr);
 				return -1;
 			}
 
 			hr = pGraph->QueryInterface(IID_IMediaControl, (void**)&pControl);
 			if (FAILED(hr))
 			{
-				Console.Warning("QueryInterface IID_IMediaControl err : %x\n", hr);
+				Console.Warning("Camera: QueryInterface IID_IMediaControl err : %x", hr);
 				return -1;
 			}
 
 			// enumerate all video capture devices
-			ICreateDevEnum* pCreateDevEnum = 0;
+			ICreateDevEnum* pCreateDevEnum = nullptr;
 			hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pCreateDevEnum));
 			if (FAILED(hr))
 			{
-				Console.Warning("Error Creating Device Enumerator");
+				Console.Warning("Camera: Error Creating Device Enumerator");
 				return -1;
 			}
 
-			IEnumMoniker* pEnum = 0;
+			IEnumMoniker* pEnum = nullptr;
 			hr = pCreateDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnum, 0);
 			if (hr != S_OK)
 			{
-				Console.Warning("You have no video capture hardware");
+				Console.Warning("Camera: You have no video capture hardware");
 				return -1;
 			};
 
 			pEnum->Reset();
 
-			IMoniker* pMoniker;
-			while (pEnum->Next(1, &pMoniker, NULL) == S_OK && sourcefilter == NULL)
+			IMoniker* pMoniker = nullptr;
+			while (pEnum->Next(1, &pMoniker, NULL) == S_OK && sourcefilter == nullptr)
 			{
-				IPropertyBag* pPropBag = 0;
+				IPropertyBag* pPropBag = nullptr;
 				hr = pMoniker->BindToStorage(0, 0, IID_PPV_ARGS(&pPropBag));
 				if (FAILED(hr))
 				{
-					Console.Warning("BindToStorage err : %x\n", hr);
+					Console.Warning("Camera: BindToStorage err : %x", hr);
 					goto freeMoniker;
 				}
 
 				VARIANT var;
 				VariantInit(&var);
-
 				hr = pPropBag->Read(L"Description", &var, 0);
 				if (FAILED(hr))
 				{
@@ -178,10 +186,10 @@ namespace usb_eyetoy
 				}
 				if (FAILED(hr))
 				{
-					Console.Warning("Read name err : %x\n", hr);
+					Console.Warning("Camera: Read name err : %x", hr);
 					goto freeVar;
 				}
-				Console.Warning("Camera: '%ls'\n", var.bstrVal);
+				Console.Warning("Camera: '%ls'", var.bstrVal);
 				if (!selectedDevice.empty() && selectedDevice != var.bstrVal)
 				{
 					goto freeVar;
@@ -191,7 +199,7 @@ namespace usb_eyetoy
 				hr = pGraph->AddSourceFilterForMoniker(pMoniker, NULL, L"sourcefilter", &sourcefilter);
 				if (FAILED(hr))
 				{
-					Console.Warning("AddSourceFilterForMoniker err : %x\n", hr);
+					Console.Warning("Camera: AddSourceFilterForMoniker err : %x", hr);
 					goto freeVar;
 				}
 
@@ -210,7 +218,7 @@ namespace usb_eyetoy
 							VIDEO_STREAM_CONFIG_CAPS scc;
 							AM_MEDIA_TYPE* pmtConfig;
 							hr = pSourceConfig->GetStreamCaps(iFormat, &pmtConfig, (BYTE*)&scc);
-							Console.Warning("GetStreamCaps min=%dx%d max=%dx%d, fmt=%x\n",
+							Console.Warning("Camera: GetStreamCaps min=%dx%d max=%dx%d, fmt=%x",
 									scc.MinOutputSize.cx, scc.MinOutputSize.cy,
 									scc.MaxOutputSize.cx, scc.MaxOutputSize.cy,
 									pmtConfig->subtype);
@@ -220,12 +228,12 @@ namespace usb_eyetoy
 								if ((pmtConfig->majortype == MEDIATYPE_Video) &&
 									(pmtConfig->formattype == FORMAT_VideoInfo) &&
 									(pmtConfig->cbFormat >= sizeof(VIDEOINFOHEADER)) &&
-									(pmtConfig->pbFormat != NULL))
+									(pmtConfig->pbFormat != nullptr))
 								{
 
 									VIDEOINFOHEADER* pVih = (VIDEOINFOHEADER*)pmtConfig->pbFormat;
-									pVih->bmiHeader.biWidth = 320;
-									pVih->bmiHeader.biHeight = 240;
+									pVih->bmiHeader.biWidth = frame_width;
+									pVih->bmiHeader.biHeight = frame_height;
 									pVih->bmiHeader.biSizeImage = DIBSIZE(pVih->bmiHeader);
 									hr = pSourceConfig->SetFormat(pmtConfig);
 								}
@@ -239,14 +247,14 @@ namespace usb_eyetoy
 				hr = CoCreateInstance(CLSID_SampleGrabber, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&samplegrabberfilter));
 				if (FAILED(hr))
 				{
-					Console.Warning("CoCreateInstance CLSID_SampleGrabber err : %x\n", hr);
+					Console.Warning("Camera: CoCreateInstance CLSID_SampleGrabber err : %x", hr);
 					goto freeVar;
 				}
 
 				hr = pGraph->AddFilter(samplegrabberfilter, L"samplegrabberfilter");
 				if (FAILED(hr))
 				{
-					Console.Warning("AddFilter samplegrabberfilter err : %x\n", hr);
+					Console.Warning("Camera: AddFilter samplegrabberfilter err : %x", hr);
 					goto freeVar;
 				}
 
@@ -254,7 +262,7 @@ namespace usb_eyetoy
 				hr = samplegrabberfilter->QueryInterface(IID_PPV_ARGS(&samplegrabber));
 				if (FAILED(hr))
 				{
-					Console.Warning("QueryInterface err : %x\n", hr);
+					Console.Warning("Camera: QueryInterface err : %x", hr);
 					goto freeVar;
 				}
 
@@ -265,7 +273,7 @@ namespace usb_eyetoy
 				hr = samplegrabber->SetMediaType(&mt);
 				if (FAILED(hr))
 				{
-					Console.Warning("SetMediaType err : %x\n", hr);
+					Console.Warning("Camera: SetMediaType err : %x", hr);
 					goto freeVar;
 				}
 
@@ -273,7 +281,7 @@ namespace usb_eyetoy
 				hr = samplegrabber->SetCallback(callbackhandler, 0);
 				if (hr != S_OK)
 				{
-					Console.Warning("SetCallback err : %x\n", hr);
+					Console.Warning("Camera: SetCallback err : %x", hr);
 					goto freeVar;
 				}
 
@@ -281,14 +289,14 @@ namespace usb_eyetoy
 				hr = CoCreateInstance(CLSID_NullRenderer, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&nullrenderer));
 				if (FAILED(hr))
 				{
-					Console.Warning("CoCreateInstance CLSID_NullRenderer err : %x\n", hr);
+					Console.Warning("Camera: CoCreateInstance CLSID_NullRenderer err : %x", hr);
 					goto freeVar;
 				}
 
 				hr = pGraph->AddFilter(nullrenderer, L"nullrenderer");
 				if (FAILED(hr))
 				{
-					Console.Warning("AddFilter nullrenderer err : %x\n", hr);
+					Console.Warning("Camera: AddFilter nullrenderer err : %x", hr);
 					goto freeVar;
 				}
 
@@ -296,7 +304,7 @@ namespace usb_eyetoy
 				hr = pGraphBuilder->RenderStream(&PIN_CATEGORY_PREVIEW, &MEDIATYPE_Video, sourcefilter, samplegrabberfilter, nullrenderer);
 				if (FAILED(hr))
 				{
-					Console.Warning("RenderStream err : %x\n", hr);
+					Console.Warning("Camera: RenderStream err : %x", hr);
 					goto freeVar;
 				}
 
@@ -305,7 +313,7 @@ namespace usb_eyetoy
 				hr = pGraphBuilder->ControlStream(&PIN_CATEGORY_CAPTURE, &MEDIATYPE_Video, sourcefilter, &start, &stop, 1, 2);
 				if (FAILED(hr))
 				{
-					Console.Warning("ControlStream err : %x\n", hr);
+					Console.Warning("Camera: ControlStream err : %x", hr);
 					goto freeVar;
 				}
 
@@ -317,7 +325,7 @@ namespace usb_eyetoy
 				pMoniker->Release();
 			}
 			pEnum->Release();
-			if (sourcefilter == NULL)
+			if (sourcefilter == nullptr)
 			{
 				return -1;
 			}
@@ -354,10 +362,7 @@ namespace usb_eyetoy
 				throw hr;
 		}
 
-		buffer_t mpeg_buffer{};
-		std::mutex mpeg_mutex;
-
-		void store_mpeg_frame(unsigned char* data, unsigned int len)
+		void store_mpeg_frame(const unsigned char* data, const unsigned int len)
 		{
 			mpeg_mutex.lock();
 			memcpy(mpeg_buffer.start, data, len);
@@ -369,60 +374,115 @@ namespace usb_eyetoy
 		{
 			if (bitsperpixel == 24)
 			{
-				unsigned char* mpegData = (unsigned char*)calloc(1, 320 * 240 * 2);
-				int mpegLen = jo_write_mpeg(mpegData, data, 320, 240, JO_RGB24, JO_FLIP_X, JO_FLIP_Y);
-				store_mpeg_frame(mpegData, mpegLen);
-				free(mpegData);
+				const int bytesPerPixel = 3;
+				int comprBufSize = frame_width * frame_height * bytesPerPixel;
+				unsigned char* comprBuf = (unsigned char*)calloc(1, comprBufSize);
+				int comprLen = 0;
+				if (frame_format == format_mpeg)
+				{
+					comprLen = jo_write_mpeg(comprBuf, data, frame_width, frame_height, JO_BGR24, mirroring_enabled ? JO_FLIP_X : JO_NONE, JO_FLIP_Y);
+				}
+				else if (frame_format == format_jpeg)
+				{
+					// flip Y - always required on windows
+					unsigned char* data2 = (unsigned char*)calloc(1, comprBufSize);
+					for (int y = 0; y < frame_height; y++)
+					{
+						for (int x = 0; x < frame_width; x++)
+						{
+							unsigned char* src = data + (y * frame_width + x) * bytesPerPixel;
+							unsigned char* dst = data2 + ((frame_height - y - 1) * frame_width + x) * bytesPerPixel;
+							dst[0] = src[2];
+							dst[1] = src[1];
+							dst[2] = src[0];
+						}
+					}
+
+					jpge::params params;
+					params.m_quality = 80;
+					params.m_subsampling = jpge::H2V1;
+					comprLen = comprBufSize;
+					if (!jpge::compress_image_to_jpeg_file_in_memory(comprBuf, comprLen, frame_width, frame_height, 3, data2, params))
+					{
+						comprLen = 0;
+					}
+					free(data2);
+				}
+				store_mpeg_frame(comprBuf, comprLen);
+				free(comprBuf);
 			}
 			else
 			{
-				Console.Warning("dshow_callback: unk format: len=%d bpp=%d\n", len, bitsperpixel);
+				Console.Warning("Camera: dshow_callback: unknown format: len=%d bpp=%d", len, bitsperpixel);
 			}
 		}
 
 		void create_dummy_frame()
 		{
-			const int width = 320;
-			const int height = 240;
 			const int bytesPerPixel = 3;
-
-			unsigned char* rgbData = (unsigned char*)calloc(1, width * height * bytesPerPixel);
-			for (int y = 0; y < height; y++)
+			int comprBufSize = frame_width * frame_height * bytesPerPixel;
+			unsigned char* rgbData = (unsigned char*)calloc(1, comprBufSize);
+			for (int y = 0; y < frame_height; y++)
 			{
-				for (int x = 0; x < width; x++)
+				for (int x = 0; x < frame_width; x++)
 				{
-					unsigned char* ptr = rgbData + (y * width + x) * bytesPerPixel;
-					ptr[0] = 255 - y;
-					ptr[1] = y;
-					ptr[2] = 255 - y;
+					unsigned char* ptr = rgbData + (y * frame_width + x) * bytesPerPixel;
+					ptr[0] = 255 * y / frame_height;
+					ptr[1] = 255 * x / frame_width;
+					ptr[2] = 255 * y / frame_height;
 				}
 			}
-			unsigned char* mpegData = (unsigned char*)calloc(1, width * height * bytesPerPixel);
-			int mpegLen = jo_write_mpeg(mpegData, rgbData, width, height, JO_RGB24, JO_NONE, JO_NONE);
+			unsigned char* comprBuf = (unsigned char*)calloc(1, comprBufSize);
+			int comprLen = 0;
+			if (frame_format == format_mpeg)
+			{
+				comprLen = jo_write_mpeg(comprBuf, rgbData, frame_width, frame_height, JO_RGB24, JO_NONE, JO_NONE);
+			}
+			else if (frame_format == format_jpeg)
+			{
+				jpge::params params;
+				params.m_quality = 80;
+				params.m_subsampling = jpge::H2V1;
+				comprLen = comprBufSize;
+				if (!jpge::compress_image_to_jpeg_file_in_memory(comprBuf, comprLen, frame_width, frame_height, 3, rgbData, params))
+				{
+					comprLen = 0;
+				}
+			}
 			free(rgbData);
 
-			store_mpeg_frame(mpegData, mpegLen);
-			free(mpegData);
+			store_mpeg_frame(comprBuf, comprLen);
+			free(comprBuf);
 		}
 
 		DirectShow::DirectShow(int port)
 		{
 			mPort = port;
-			pGraphBuilder = NULL;
-			pGraph = NULL;
-			pControl = NULL;
-			sourcefilter = NULL;
-			samplegrabberfilter = NULL;
-			nullrenderer = NULL;
-			pSourceConfig = NULL;
-			samplegrabber = NULL;
+			pGraphBuilder = nullptr;
+			pGraph = nullptr;
+			pControl = nullptr;
+			sourcefilter = nullptr;
+			samplegrabberfilter = nullptr;
+			nullrenderer = nullptr;
+			pSourceConfig = nullptr;
+			samplegrabber = nullptr;
 			callbackhandler = new CallbackHandler();
 			CoInitialize(NULL);
+			mpeg_buffer.start = calloc(1, 640 * 480 * 2);
 		}
 
-		int DirectShow::Open()
+		DirectShow::~DirectShow()
 		{
-			mpeg_buffer.start = calloc(1, 320 * 240 * 2);
+			free(mpeg_buffer.start);
+			mpeg_buffer.start = nullptr;
+		}
+
+		int DirectShow::Open(int width, int height, FrameFormat format, int mirror)
+		{
+			frame_width = width;
+			frame_height = height;
+			frame_format = format;
+			mirroring_enabled = mirror;
 			create_dummy_frame();
 
 			std::wstring selectedDevice;
@@ -431,7 +491,7 @@ namespace usb_eyetoy
 			int ret = InitializeDevice(selectedDevice);
 			if (ret < 0)
 			{
-				Console.Warning("Camera: cannot find '%ls'\n", selectedDevice.c_str());
+				Console.Warning("Camera: cannot find '%ls'", selectedDevice.c_str());
 				return -1;
 			}
 
@@ -445,40 +505,40 @@ namespace usb_eyetoy
 
 		int DirectShow::Close()
 		{
-			if (sourcefilter != NULL)
+			if (sourcefilter)
 			{
 				this->Stop();
 				pControl->Stop();
 
-				sourcefilter->Release();
-				pSourceConfig->Release();
-				samplegrabberfilter->Release();
-				samplegrabber->Release();
-				nullrenderer->Release();
+				safe_release(sourcefilter);
+				safe_release(pSourceConfig);
+				safe_release(samplegrabberfilter);
+				safe_release(samplegrabber);
+				safe_release(nullrenderer);
 			}
 
-			pGraphBuilder->Release();
-			pGraph->Release();
-			pControl->Release();
-
-			if (mpeg_buffer.start != NULL)
-			{
-				free(mpeg_buffer.start);
-				mpeg_buffer.start = NULL;
-			}
+			safe_release(pGraphBuilder);
+			safe_release(pGraph);
+			safe_release(pControl);
 			return 0;
 		};
 
-		int DirectShow::GetImage(uint8_t* buf, int len)
+		int DirectShow::GetImage(uint8_t* buf, size_t len)
 		{
 			mpeg_mutex.lock();
 			int len2 = mpeg_buffer.length;
-			if (len < mpeg_buffer.length)
+			if ((unsigned int)len < mpeg_buffer.length)
 				len2 = len;
 			memcpy(buf, mpeg_buffer.start, len2);
+			mpeg_buffer.length = 0;
 			mpeg_mutex.unlock();
 			return len2;
 		};
+
+		void DirectShow::SetMirroring(bool state)
+		{
+			mirroring_enabled = state;
+		}
 
 		BOOL CALLBACK DirectShowDlgProc(HWND hW, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		{

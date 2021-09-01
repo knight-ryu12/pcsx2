@@ -1,5 +1,5 @@
 /*  PCSX2 - PS2 Emulator for PCs
- *  Copyright (C) 2002-2010  PCSX2 Dev Team
+ *  Copyright (C) 2002-2021  PCSX2 Dev Team
  *
  *  PCSX2 is free software: you can redistribute it and/or modify it under the terms
  *  of the GNU Lesser General Public License as published by the Free Software Found-
@@ -29,7 +29,11 @@
 #include "VUmicro.h"
 
 #include "ps2/HwInternal.h"
-
+#ifdef _WIN32
+#include "PAD/Windows/PAD.h"
+#else
+#include "PAD/Linux/PAD.h"
+#endif
 #include "Sio.h"
 
 #ifndef DISABLE_RECORDING
@@ -62,9 +66,10 @@ static void rcntWmode(int index, u32 value);
 static void rcntWtarget(int index, u32 value);
 static void rcntWhold(int index, u32 value);
 
-static bool IsAnalogVideoMode()
+// For Analog/Double Strike and Interlace modes
+static bool IsInterlacedVideoMode()
 {
-	return (gsVideoMode == GS_VideoMode::PAL || gsVideoMode == GS_VideoMode::NTSC || gsVideoMode == GS_VideoMode::DVD_NTSC || gsVideoMode == GS_VideoMode::DVD_PAL);
+	return (gsVideoMode == GS_VideoMode::PAL || gsVideoMode == GS_VideoMode::NTSC || gsVideoMode == GS_VideoMode::DVD_NTSC || gsVideoMode == GS_VideoMode::DVD_PAL || gsVideoMode == GS_VideoMode::HDTV_1080I);
 }
 
 void rcntReset(int index) {
@@ -221,7 +226,7 @@ static void vSyncInfoCalc(vSyncTimingInfo* info, Fixed100 framesPerSecond, u32 s
 	u64 hBlank = Scanline / 2;
 	u64 hRender = Scanline - hBlank;
 
-	if (!IsAnalogVideoMode())
+	if (!IsInterlacedVideoMode())
 	{
 		hBlank /= 2;
 		hRender /= 2;
@@ -245,7 +250,7 @@ static void vSyncInfoCalc(vSyncTimingInfo* info, Fixed100 framesPerSecond, u32 s
 	if ((hBlank % 10000) >= 5000) info->hBlank++;
 
 	// Calculate accumulative hSync rounding error per half-frame:
-	if (IsAnalogVideoMode()) // gets off the chart in that mode
+	if (IsInterlacedVideoMode()) // gets off the chart in that mode
 	{
 		u32 hSyncCycles = ((info->hRender + info->hBlank) * scansPerFrame) / 2;
 		u32 vSyncCycles = (info->Render + info->Blank);
@@ -346,25 +351,24 @@ u32 UpdateVSyncRate()
 	case GS_VideoMode::DVD_PAL:
 		isCustom = (EmuConfig.GS.FrameratePAL != 50.0);
 		scanlines = SCANLINES_TOTAL_PAL;
-		if (!gsIsInterlaced) scanlines += 3;
 		break;
 
 	case GS_VideoMode::NTSC:
 	case GS_VideoMode::DVD_NTSC:
 		isCustom = (EmuConfig.GS.FramerateNTSC != 59.94);
 		scanlines = SCANLINES_TOTAL_NTSC;
-		if (!gsIsInterlaced) scanlines += 1;
 		break;
 
 	case GS_VideoMode::SDTV_480P:
 	case GS_VideoMode::SDTV_576P:
-	case GS_VideoMode::HDTV_1080P:
-	case GS_VideoMode::HDTV_1080I:
 	case GS_VideoMode::HDTV_720P:
 	case GS_VideoMode::VESA:
 		scanlines = SCANLINES_TOTAL_NTSC;
 		break;
-
+	case GS_VideoMode::HDTV_1080P:
+	case GS_VideoMode::HDTV_1080I:
+		scanlines = SCANLINES_TOTAL_1080;
+		break;
 	case GS_VideoMode::Unknown:
 	default:
 		// Falls through to default when unidentified mode parameter of SetGsCrt is detected.
@@ -473,6 +477,15 @@ static __fi void frameLimit()
 
 static __fi void VSyncStart(u32 sCycle)
 {
+#ifndef DISABLE_RECORDING
+	if (g_Conf->EmuOptions.EnableRecordingTools)
+	{
+		// It is imperative that any frame locking that must happen occurs before Vsync is started
+		// Not doing so would sacrifice a frame of a savestate-based recording when loading any savestate
+		g_InputRecordingControls.HandlePausingAndLocking();
+	}
+#endif
+
 	frameLimit(); // limit FPS
 	gsPostVsyncStart(); // MUST be after framelimit; doing so before causes funk with frame times!
 
@@ -509,7 +522,11 @@ static __fi void VSyncStart(u32 sCycle)
 
 	//cpuRegs.eCycle[30] = 2;
 
-	// Should no longer be required (Refraction)
+	// Update 08/2021: The only game I know to require this kind of thing as of 1.7.0 is Penny Racers/Gadget Racers (which has a patch to avoid the problem and others)
+	// These games have a tight loop checking INTC_STAT waiting for the VBLANK Start, however the game also has a VBLANK Hander which clears it.
+	// Therefore, there needs to be some delay in order for it to see the interrupt flag before the interrupt is acknowledged, likely helped on real hardware by the pipelines.
+	// Without the patch and fixing this, the games have other issues, so I'm not going to rush to fix it.
+	// Refraction
 }
 
 static __fi void GSVSync()
@@ -527,12 +544,17 @@ static __fi void GSVSync()
 
 static __fi void VSyncEnd(u32 sCycle)
 {
+#ifndef DISABLE_RECORDING
+	if (g_Conf->EmuOptions.EnableRecordingTools)
+	{
+		g_InputRecordingControls.CheckPauseStatus();
+	}
+#endif
+
 	if(EmuConfig.Trace.Enabled && EmuConfig.Trace.EE.m_EnableAll)
 		SysTrace.EE.Counters.Write( "    ================  EE COUNTER VSYNC END (frame: %d)  ================", g_FrameCount );
 
 	g_FrameCount++;
-
-
 
 	hwIntcIrq(INTC_VBLANK_E);  // HW Irq
 	psxVBlankEnd(); // psxCounters vBlank End
@@ -612,12 +634,6 @@ __fi void rcntUpdate_vSync()
 	}
 	else	// VSYNC end / VRENDER begin
 	{
-#ifndef DISABLE_RECORDING
-		if (g_Conf->EmuOptions.EnableRecordingTools)
-		{
-			g_InputRecordingControls.HandleFrameAdvanceAndPausing();
-		}
-#endif
 		VSyncStart(vsyncCounter.sCycle);
 
 		vsyncCounter.sCycle += vSyncInfo.Render;
@@ -642,23 +658,22 @@ __fi void rcntUpdate_vSync()
 
 static __fi void _cpuTestTarget( int i )
 {
-	if (counters[i].count < counters[i].target) return;
+	if (counters[i].count < counters[i].target)
+		return;
 
 	if(counters[i].mode.TargetInterrupt) {
-
 		EECNT_LOG("EE Counter[%d] TARGET reached - mode=%x, count=%x, target=%x", i, counters[i].mode, counters[i].count, counters[i].target);
 		if (!counters[i].mode.TargetReached)
 		{
 			counters[i].mode.TargetReached = 1;
 			hwIntcIrq(counters[i].interrupt);
 		}
-		// The PS2 only resets if the interrupt is enabled - Tested on PS2
-		if (counters[i].mode.ZeroReturn)
-			counters[i].count -= counters[i].target; // Reset on target
-		else
-			counters[i].target |= EECNT_FUTURE_TARGET;
 	}
-	else counters[i].target |= EECNT_FUTURE_TARGET;
+
+	if (counters[i].mode.ZeroReturn)
+		counters[i].count -= counters[i].target; // Reset on target
+	else
+		counters[i].target |= EECNT_FUTURE_TARGET; // OR with future target to prevent a retrigger
 }
 
 static __fi void _cpuTestOverflow( int i )
@@ -1039,6 +1054,9 @@ void SaveStateBase::rcntFreeze()
 	Freeze( vsyncCounter );
 	Freeze( nextCounter );
 	Freeze( nextsCounter );
+	Freeze( vSyncInfo );
+	Freeze( gsVideoMode );
+	Freeze( gsIsInterlaced );
 
 	if( IsLoading() )
 	{

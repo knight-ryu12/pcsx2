@@ -28,7 +28,7 @@
 #include "versionproxy.h"
 
 #include "usb-pad-dx.h"
-#include "../../shared/inifile_usb.h"
+#include "USB/shared/inifile_usb.h"
 
 namespace usb_pad
 {
@@ -49,10 +49,13 @@ namespace usb_pad
 		std::vector<DIJOYSTATE2> jso; // DInput joystick old state, only for config
 		std::vector<DIJOYSTATE2> jsi; // DInput joystick initial state, only for config
 
-		int32_t BYPASSCAL = 0;
 		int32_t GAINZ[2][1];
 		int32_t FFMULTI[2][1];
 		int32_t INVERTFORCES[2]{};
+
+		// FFB test
+		bool ffbTestRunning = false;
+		unsigned int ffbTestStage = 0;
 
 		bool dialogOpen = false;
 
@@ -105,6 +108,17 @@ namespace usb_pad
 			IDC_LABEL17,
 			IDC_LABEL18,
 			IDC_LABEL19,
+			IDC_LABEL20,
+			IDC_LABEL21,
+			IDC_LABEL22,
+			IDC_LABEL23,
+			IDC_LABEL24,
+			IDC_LABEL25,
+			IDC_LABEL26,
+			IDC_LABEL27,
+			IDC_LABEL28,
+			IDC_LABEL29,
+			IDC_LABEL30,
 		};
 
 		struct DXDlgSettings
@@ -686,6 +700,14 @@ namespace usb_pad
 			EndPaint(hWnd, &Ps);
 		}
 
+		void EndFFBTest()
+		{
+			if (std::exchange(ffbTestRunning, false))
+			{
+				KillTimer(hWnd, 23);
+			}
+		}
+
 		INT_PTR CALLBACK StaticProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		{
 			(*pFnPrevFunc)(hDlg, uMsg, wParam, lParam);
@@ -775,7 +797,6 @@ namespace usb_pad
 			SendMessage(GetDlgItem(hWnd, IDC_SLIDER5), TBM_SETPOS, 1, FFMULTI[port][0]);
 
 			SendMessage(GetDlgItem(hWnd, IDC_CHECK1), BM_SETCHECK, INVERTFORCES[port], 0);
-			SendMessage(GetDlgItem(hWnd, IDC_CHECK2), BM_SETCHECK, BYPASSCAL, 0);
 			SendMessage(GetDlgItem(hWnd, IDC_CHECK3), BM_SETCHECK, useRamp, 0);
 			//HANDLE hBitmap = LoadImage(NULL,MAKEINTRESOURCE(IDB_BITMAP1), IMAGE_BITMAP,0,0,LR_DEFAULTSIZE);
 			//SendMessage(GetDlgItem(hWnd,IDC_PICTURELINK), STM_SETIMAGE, IMAGE_BITMAP, LPARAM(hBitmap));
@@ -892,6 +913,16 @@ namespace usb_pad
 							ControlTest(s->port);
 							break;
 						}
+						case 23:
+						{
+							s = (DXDlgSettings*)GetWindowLongPtr(hDlg, GWLP_USERDATA);
+							if (!UpdateTestForce(s->port, ffbTestStage++))
+							{
+								EndTestForce(s->port);
+								EndFFBTest();
+							}
+							break;
+						}
 					}
 					break;
 				}
@@ -928,17 +959,14 @@ namespace usb_pad
 
 						case IDOK:
 						{
-							INVERTFORCES[s->port] = SendDlgItemMessage(hWnd, IDC_CHECK1, BM_GETCHECK, 0, 0);
-							BYPASSCAL = SendDlgItemMessage(hWnd, IDC_CHECK2, BM_GETCHECK, 0, 0);
-							useRamp = !!SendDlgItemMessage(hWnd, IDC_CHECK3, BM_GETCHECK, 0, 0);
-							GAINZ[s->port][0] = SendMessage(GetDlgItem(hWnd, IDC_SLIDER4), TBM_GETPOS, 0, 0);
-							FFMULTI[s->port][0] = SendMessage(GetDlgItem(hWnd, IDC_SLIDER5), TBM_GETPOS, 0, 0);
+							ApplySettings(s->port);
 							SaveDInputConfig(s->port, s->dev_type);
 							SaveConfig(); // Force save to ini file
 							//Seems to create some dead locks
 							//SendMessage(hWnd, WM_CLOSE, 0, 0);
 							//return TRUE;
 							dialogOpen = false;
+							EndFFBTest();
 							FreeDirectInput();
 							EndDialog(hWnd, TRUE);
 							return TRUE;
@@ -949,6 +977,7 @@ namespace usb_pad
 							//Seems to create some dead locks
 							//SendMessage(hWnd, WM_CLOSE, 0, 0);
 							dialogOpen = false;
+							EndFFBTest();
 							FreeDirectInput();
 							EndDialog(hWnd, FALSE);
 							return TRUE;
@@ -956,8 +985,28 @@ namespace usb_pad
 						break;
 						case IDC_BUTTON1:
 						{
-							//MessageBeep(MB_ICONEXCLAMATION);
-							TestForce(s->port);
+							if (!ffbTestRunning)
+							{
+								ApplySettings(s->port);
+								if (StartTestForce(s->port))
+								{
+									if (UpdateTestForce(s->port, 0))
+									{
+										// Start a timer to "tick" the FFB test every 500ms
+										ffbTestStage = 1;
+										SetTimer(hWnd, 23, 500, nullptr);
+										ffbTestRunning = true;
+									}
+								}
+							}
+						}
+						break;
+						case IDC_DELALL:
+						{
+							for (int i = 0; i < CID_COUNT; i++)
+							{
+								DeleteControl(s->port, (ControlID)i);
+							}
 						}
 						break;
 
@@ -1059,6 +1108,61 @@ namespace usb_pad
 						case IDC_ASS19:
 						{
 							StartListen(CID_START);
+							break;
+						}
+						case IDC_ASS20:
+						{
+							StartListen(CID_BUTTON20);
+							break;
+						}
+						case IDC_ASS21:
+						{
+							StartListen(CID_BUTTON21);
+							break;
+						}
+						case IDC_ASS22:
+						{
+							StartListen(CID_BUTTON22);
+							break;
+						}
+						case IDC_ASS23:
+						{
+							StartListen(CID_BUTTON23);
+							break;
+						}
+						case IDC_ASS24:
+						{
+							StartListen(CID_BUTTON24);
+							break;
+						}
+						case IDC_ASS25:
+						{
+							StartListen(CID_BUTTON25);
+							break;
+						}
+						case IDC_ASS26:
+						{
+							StartListen(CID_BUTTON26);
+							break;
+						}
+						case IDC_ASS27:
+						{
+							StartListen(CID_BUTTON27);
+							break;
+						}
+						case IDC_ASS28:
+						{
+							StartListen(CID_BUTTON28);
+							break;
+						}
+						case IDC_ASS29:
+						{
+							StartListen(CID_BUTTON29);
+							break;
+						}
+						case IDC_ASS30:
+						{
+							StartListen(CID_BUTTON30);
 							break;
 						}
 						case IDC_DEL0:
@@ -1184,6 +1288,7 @@ namespace usb_pad
 				case WM_CLOSE:
 				{
 					dialogOpen = false;
+					EndFFBTest();
 					FreeDirectInput();
 					EndDialog(hWnd, 0);
 				}
@@ -1206,10 +1311,16 @@ namespace usb_pad
 			return FALSE;
 		}
 
+		void ApplySettings(int port)
+		{
+			INVERTFORCES[port] = SendDlgItemMessage(hWnd, IDC_CHECK1, BM_GETCHECK, 0, 0);
+			useRamp = !!SendDlgItemMessage(hWnd, IDC_CHECK3, BM_GETCHECK, 0, 0);
+			GAINZ[port][0] = SendMessage(GetDlgItem(hWnd, IDC_SLIDER4), TBM_GETPOS, 0, 0);
+			FFMULTI[port][0] = SendMessage(GetDlgItem(hWnd, IDC_SLIDER5), TBM_GETPOS, 0, 0);
+		}
+
 		void SaveDInputConfig(int port, const char* dev_type)
 		{
-			SaveSetting(TEXT("dinput"), TEXT("BYPASSCAL"), BYPASSCAL);
-
 			wchar_t section[256];
 			swprintf_s(section, L"%S dinput %d", dev_type, port);
 
@@ -1257,14 +1368,12 @@ namespace usb_pad
 
 		void LoadDInputConfig(int port, const char* dev_type)
 		{
-			LoadSetting(TEXT("dinput"), TEXT("BYPASSCAL"), BYPASSCAL);
-
 			wchar_t section[256];
 			swprintf_s(section, L"%S dinput %d", dev_type, port);
 
 			LoadSetting(section, TEXT("INVERTFORCES"), INVERTFORCES[port]);
 			if (!LoadSetting(section, TEXT("GAINZ"), GAINZ[port][0]))
-				GAINZ[port][0] = 10000;
+				GAINZ[port][0] = DI_FFNOMINALMAX;
 
 			if (!LoadSetting(section, TEXT("FFMULTI"), FFMULTI[port][0]))
 				FFMULTI[port][0] = 0;
@@ -1338,7 +1447,7 @@ namespace usb_pad
 					AddInputMap(port, (ControlID)cid, im);
 				}
 			}
-			catch (std::exception& err)
+			catch (std::exception&)
 			{
 			}
 
@@ -1351,9 +1460,13 @@ namespace usb_pad
 			struct DXDlgSettings s;
 			s.port = port;
 			s.dev_type = dev_type;
-			if (strcmp(dev_type, "buzz_device") == 0)
+			if (strcmp(dev_type, BuzzDevice::TypeName()) == 0)
 			{
 				return DialogBoxParam(h.hInst, MAKEINTRESOURCE(IDD_DLG_BUZZ), h.hWnd, DxDialogProc, (LPARAM)&s);
+			}
+			if (strcmp(dev_type, KeyboardmaniaDevice::TypeName()) == 0)
+			{
+				return DialogBoxParam(h.hInst, MAKEINTRESOURCE(IDD_DLG_KEYBOARDMANIA), h.hWnd, DxDialogProc, (LPARAM)&s);
 			}
 			return DialogBoxParam(h.hInst, MAKEINTRESOURCE(IDD_DIALOG1), h.hWnd, DxDialogProc, (LPARAM)&s);
 		}

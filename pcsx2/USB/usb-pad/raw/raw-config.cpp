@@ -15,7 +15,9 @@
 
 #include "PrecompiledHeader.h"
 
+#if !defined(_WIN32_WINNT)
 #define _WIN32_WINNT 0x0502
+#endif
 #include <stdio.h>
 #include <windows.h>
 #include <windowsx.h>
@@ -24,7 +26,7 @@
 
 #include <algorithm>
 #include <map>
-#include "../../configuration.h"
+#include "USB/configuration.h"
 #include "usb-pad-raw.h"
 #include "raw-config-res.h"
 #include <strsafe.h>
@@ -267,12 +269,6 @@ namespace usb_pad
 			tie.pszText = TEXT("Player 2");
 			SendDlgItemMessage(hW, IDC_TAB1, TCM_INSERTITEM, 1, (LPARAM)&tie);
 
-			//SendDlgItemMessageA(hW, IDC_COMBO_WHEEL_TYPE, CB_ADDSTRING, 0, (LPARAM)"DF / Generic Logitech Wheel");
-			////SendDlgItemMessageA(hW, IDC_COMBO_WHEEL_TYPE, CB_ADDSTRING, 0, (LPARAM)"Driving Force");
-			//SendDlgItemMessageA(hW, IDC_COMBO_WHEEL_TYPE, CB_ADDSTRING, 0, (LPARAM)"Driving Force Pro");
-			//SendDlgItemMessage(hW, IDC_COMBO_WHEEL_TYPE, CB_SETCURSEL, conf.WheelType1, 0);
-			////SendDlgItemMessageA(hW, IDC_COMBO_WHEEL_TYPE, CB_ADDSTRING, 0, (LPARAM)"Driving Force GT");
-
 			//Selected FFB target device
 			SendDlgItemMessageA(hW, IDC_COMBO_FFB, CB_ADDSTRING, 0, (LPARAM) "None");
 			SendDlgItemMessage(hW, IDC_COMBO_FFB, CB_SETCURSEL, 0, 0);
@@ -299,18 +295,25 @@ namespace usb_pad
 
 				if (usbHandle == INVALID_HANDLE_VALUE)
 				{
-					Console.Warning("Could not open device %i\n", i);
+					Console.Warning("Could not open device %i", i);
 					free(didData);
 					i++;
 					continue;
 				}
 
 				HidD_GetAttributes(usbHandle, &attr);
-				HidD_GetPreparsedData(usbHandle, &pPreparsedData);
+				if (!HidD_GetPreparsedData(usbHandle, &pPreparsedData))
+				{
+					Console.Warning("Could not get preparsed data from %04x:%04x", attr.VendorID, attr.ProductID);
+					free(didData);
+					i++;
+					continue;
+				}
+
 				HidP_GetCaps(pPreparsedData, &caps);
 
 				if (caps.UsagePage == HID_USAGE_PAGE_GENERIC &&
-					caps.Usage == HID_USAGE_GENERIC_JOYSTICK)
+					(caps.Usage == HID_USAGE_GENERIC_JOYSTICK || caps.Usage == HID_USAGE_GENERIC_GAMEPAD))
 				{
 					std::wstring strPath(didData->DevicePath);
 					std::transform(strPath.begin(), strPath.end(), strPath.begin(), ::toupper);
@@ -506,7 +509,7 @@ namespace usb_pad
 				mapping->devName = devName;
 				mapping->hidPath = devName;
 			}
-			//TODO get real dev name, probably from registry (see lilypad)
+			//TODO get real dev name, probably from registry (see PAD Windows)
 			if (!mapping->devName.length())
 				mapping->devName = devName;
 
@@ -648,8 +651,6 @@ namespace usb_pad
 			SendDlgItemMessage(hW, IDC_COMBO_FFB, CB_SETCURSEL, selectedJoy[plyCapturing], 0);
 			SendDlgItemMessage(hW, IDC_STATIC_CAP, WM_SETTEXT, 0, (LPARAM)TEXT(""));
 
-			SendDlgItemMessage(hW, IDC_COMBO_WHEEL_TYPE, CB_SETCURSEL, conf.WheelType[1 - plyCapturing], 0);
-
 			btnCapturing = PAD_BUTTON_COUNT;
 			axisCapturing = PAD_AXIS_COUNT;
 			hatCapturing = PAD_HAT_COUNT;
@@ -778,9 +779,6 @@ namespace usb_pad
 						case LBN_SELCHANGE:
 							switch (LOWORD(wParam))
 							{
-								case IDC_COMBO_WHEEL_TYPE:
-									conf.WheelType[1 - plyCapturing] = SendDlgItemMessage(hW, IDC_COMBO_WHEEL_TYPE, CB_GETCURSEL, 0, 0);
-									break;
 								case IDC_COMBO_FFB:
 									selectedJoy[plyCapturing] = SendDlgItemMessage(hW, IDC_COMBO_FFB, CB_GETCURSEL, 0, 0);
 									//player_joys[plyCapturing] = *(joysDev.begin() + selectedJoy[plyCapturing]);

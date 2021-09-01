@@ -25,10 +25,10 @@
 // Most stuff is based on Qemu 1.7 USB soundcard passthrough code.
 
 #include "PrecompiledHeader.h"
-#include "../qemu-usb/vl.h"
-#include "../qemu-usb/desc.h"
+#include "USB/qemu-usb/vl.h"
+#include "USB/qemu-usb/desc.h"
 #include "usb-mic-singstar.h"
-#include "../shared/inifile_usb.h"
+#include "USB/shared/inifile_usb.h"
 #include <assert.h>
 
 static FILE* file = NULL;
@@ -585,6 +585,11 @@ namespace usb_mic
 					int16_t* dst = nullptr;
 					std::vector<int16_t> dst_alloc(0); //TODO
 					size_t len = p->iov.size;
+
+					// send only 1ms (bInterval) of samples
+					if (s->f.srate[0] == 48000 || s->f.srate[0] == 8000)
+						len = std::min(p->iov.size, outChns * sizeof(int16_t) * s->f.srate[0] / 1000);
+
 					//Divide 'len' bytes between 2 channels of 16 bits
 					uint32_t max_frames = len / (outChns * sizeof(uint16_t));
 
@@ -692,7 +697,7 @@ namespace usb_mic
 					else
 						p->actual_length = ret;
 
-#if defined(_DEBUG) && _MSC_VER > 1800
+#if 0 //defined(_DEBUG) && _MSC_VER > 1800
 					if (!file)
 					{
 						char name[1024] = {0};
@@ -857,24 +862,24 @@ namespace usb_mic
 		return RESULT_CANCELED;
 	}
 
-	int SingstarDevice::Freeze(int mode, USBDevice* dev, void* data)
+	int SingstarDevice::Freeze(FreezeAction mode, USBDevice* dev, void* data)
 	{
 		SINGSTARMICState* s = (SINGSTARMICState*)dev;
 		if (!s)
 			return 0;
 		switch (mode)
 		{
-			case FREEZE_LOAD:
+			case FreezeAction::Load:
 				s->f = *(SINGSTARMICState::freeze*)data;
 				if (s->audsrc[0])
 					s->audsrc[0]->SetResampling(s->f.srate[0]);
 				if (s->audsrc[1])
 					s->audsrc[1]->SetResampling(s->f.srate[1]);
 				return sizeof(SINGSTARMICState::freeze);
-			case FREEZE_SAVE:
+			case FreezeAction::Save:
 				*(SINGSTARMICState::freeze*)data = s->f;
 				return sizeof(SINGSTARMICState::freeze);
-			case FREEZE_SIZE:
+			case FreezeAction::Size:
 				return sizeof(SINGSTARMICState::freeze);
 			default:
 				break;
