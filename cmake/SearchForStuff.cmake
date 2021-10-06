@@ -15,6 +15,7 @@ if (WIN32)
 	add_subdirectory(3rdparty/portaudio EXCLUDE_FROM_ALL)
 	add_subdirectory(3rdparty/pthreads4w EXCLUDE_FROM_ALL)
 	add_subdirectory(3rdparty/soundtouch EXCLUDE_FROM_ALL)
+	add_subdirectory(3rdparty/wil EXCLUDE_FROM_ALL)
 	add_subdirectory(3rdparty/wxwidgets3.0 EXCLUDE_FROM_ALL)
 	add_subdirectory(3rdparty/xz EXCLUDE_FROM_ALL)
 else()
@@ -118,21 +119,25 @@ else()
 	## Use CheckLib package to find module
 	include(CheckLib)
 
-	if(Linux)
+	if(UNIX AND NOT APPLE)
 		check_lib(EGL EGL EGL/egl.h)
 		check_lib(X11_XCB X11-xcb X11/Xlib-xcb.h)
 		check_lib(XCB xcb xcb/xcb.h)
-		check_lib(AIO aio libaio.h)
-		# There are two udev pkg config files - udev.pc (wrong), libudev.pc (correct)
-		# When cross compiling, pkg-config will be skipped so we have to look for
-		# udev (it'll automatically be prefixed with lib). But when not cross
-		# compiling, we have to look for libudev.pc. Argh. Hence the silliness below.
-		if(CMAKE_CROSSCOMPILING)
-			check_lib(LIBUDEV udev libudev.h)
-		else()
-			check_lib(LIBUDEV libudev libudev.h)
+
+		if(Linux)
+			check_lib(AIO aio libaio.h)
+			# There are two udev pkg config files - udev.pc (wrong), libudev.pc (correct)
+			# When cross compiling, pkg-config will be skipped so we have to look for
+			# udev (it'll automatically be prefixed with lib). But when not cross
+			# compiling, we have to look for libudev.pc. Argh. Hence the silliness below.
+			if(CMAKE_CROSSCOMPILING)
+				check_lib(LIBUDEV udev libudev.h)
+			else()
+				check_lib(LIBUDEV libudev libudev.h)
+			endif()
 		endif()
 	endif()
+
 	if(PORTAUDIO_API)
 		check_lib(PORTAUDIO portaudio portaudio.h pa_linux_alsa.h)
 	endif()
@@ -246,6 +251,8 @@ add_subdirectory(3rdparty/libchdr/libchdr EXCLUDE_FROM_ALL)
 if(USE_NATIVE_TOOLS)
 	add_subdirectory(tools/bin2cpp EXCLUDE_FROM_ALL)
 	set(BIN2CPP bin2cpp)
+	set(BIN2CPPDEP bin2cpp)
 else()
 	set(BIN2CPP perl ${CMAKE_SOURCE_DIR}/linux_various/hex2h.pl)
+	set(BIN2CPPDEP ${CMAKE_SOURCE_DIR}/linux_various/hex2h.pl)
 endif()
